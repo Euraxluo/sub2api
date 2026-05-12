@@ -97,6 +97,8 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+
+		registerPluginAdminTools(admin)
 	}
 }
 

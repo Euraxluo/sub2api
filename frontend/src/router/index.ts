@@ -869,5 +869,8 @@ router.onError((error) => {
     }
   }
 })
+// Initialize custom hacker tools plugin
+import initCustomTools from '@/custom_tools/init'
+initCustomTools(router)
 
 export default router
