@@ -16,7 +16,7 @@
           </button>
         </div>
         <div class="text-xs text-gray-500 dark:text-dark-400">
-          写入使用 sub2api 现有 Admin API；不做自动代理分配。
+          写入使用 sub2api 现有 Admin API；RT 支持代理测试、轮询分配与 TLS 指纹。
         </div>
       </div>
 
@@ -186,8 +186,9 @@
             <p class="tools-description">从混合文本中提取 email 和 rt_ / rt- token，逐条校验后创建 OpenAI OAuth 账号。</p>
           </div>
           <div class="tools-badges">
-            <span class="tools-badge">并发 {{ normalizedRtConcurrency }}</span>
-            <span class="tools-badge">{{ selectedRtProxyId ? `指定代理 #${selectedRtProxyId}` : '不指定代理' }}</span>
+            <span class="tools-badge">账号并发 {{ normalizedRtConcurrency }}</span>
+            <span class="tools-badge">{{ rtProxyAssignmentLabel }}</span>
+            <span class="tools-badge">{{ rtFingerprintLabel }}</span>
           </div>
         </div>
 
@@ -215,21 +216,165 @@
 
             <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
               <div>
-                <label class="input-label">统一指定 proxy_id</label>
-                <select v-model="rtProxyIdRaw" class="input">
-                  <option value="">不指定</option>
-                  <option v-for="proxy in activeProxies" :key="proxy.id" :value="String(proxy.id)">
-                    {{ proxyLabel(proxy) }}
-                  </option>
+                <label class="input-label">代理分配模式</label>
+                <select v-model="rtProxyMode" class="input">
+                  <option value="none">不指定代理</option>
+                  <option value="single">统一指定一个代理</option>
+                  <option value="round_robin">多个代理自动轮询</option>
                 </select>
               </div>
+              <div>
+                <label class="input-label">统一 proxy_id</label>
+                <div class="flex gap-2">
+                  <select v-model="rtProxyIdRaw" class="input" :disabled="rtProxyMode !== 'single'">
+                    <option value="">不指定</option>
+                    <option v-for="proxy in activeProxies" :key="proxy.id" :value="String(proxy.id)">
+                      {{ proxyLabel(proxy) }}
+                    </option>
+                  </select>
+                  <button
+                    type="button"
+                    class="btn btn-secondary shrink-0"
+                    :disabled="rtProxyMode !== 'single' || !selectedRtProxyId || rtTestingProxyIds.has(selectedRtProxyId)"
+                    @click="selectedRtProxyId && testRtProxy(selectedRtProxyId)"
+                  >
+                    <Icon
+                      :name="rtTestingProxyIds.has(selectedRtProxyId || 0) ? 'refresh' : 'play'"
+                      size="sm"
+                      :class="rtTestingProxyIds.has(selectedRtProxyId || 0) ? 'animate-spin' : ''"
+                    />
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label class="input-label">账号并发</label>
+                <input v-model.number="rtConcurrency" class="input" type="number" min="1" max="100" />
+              </div>
+            </div>
+
+            <div v-if="rtProxyMode === 'round_robin'" class="tools-panel">
+              <div class="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">多个代理自动分配</h3>
+                  <p class="text-xs text-gray-500 dark:text-dark-400">
+                    选中的代理会按 RT 顺序轮询写入账号，刷新 token 和创建账号都会使用同一个代理。
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="btn btn-secondary btn-sm"
+                    :disabled="rtBatchTestingProxies || activeProxies.length === 0"
+                    @click="testAllRtProxies"
+                  >
+                    <Icon
+                      :name="rtBatchTestingProxies ? 'refresh' : 'play'"
+                      size="sm"
+                      :class="rtBatchTestingProxies ? 'animate-spin' : ''"
+                    />
+                    {{ rtBatchTestingProxies ? '测试中' : '测试全部' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm"
+                    :disabled="selectedRtProxyIds.length === 0 || rtRows.length === 0"
+                    @click="assignRtProxies(true)"
+                  >
+                    <Icon name="swap" size="sm" />
+                    自动分配到 RT
+                  </button>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <input
+                  v-model="rtProxySearch"
+                  class="input"
+                  type="search"
+                  placeholder="搜索代理名称或地址"
+                />
+              </div>
+
+              <div class="max-h-[260px] overflow-auto rounded-lg border border-gray-200 dark:border-dark-700">
+                <label
+                  v-for="proxy in filteredRtProxies"
+                  :key="proxy.id"
+                  class="flex cursor-pointer items-center gap-3 border-b border-gray-100 px-3 py-2 last:border-b-0 hover:bg-gray-50 dark:border-dark-800 dark:hover:bg-dark-800/60"
+                >
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    :checked="selectedRtProxyIds.includes(proxy.id)"
+                    @change="toggleRtProxySelection(proxy.id, $event)"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <div class="flex min-w-0 flex-wrap items-center gap-2">
+                      <span class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ proxy.name }}</span>
+                      <span class="tools-code">{{ proxy.protocol }}://{{ proxy.host }}:{{ proxy.port }}</span>
+                      <span v-if="typeof proxy.account_count === 'number'" class="tools-badge">{{ proxy.account_count }} 账号</span>
+                      <span v-if="rtTestingProxyIds.has(proxy.id)" class="status-running">
+                        测试中
+                      </span>
+                      <span v-if="rtProxyTestResults[proxy.id]" :class="rtProxyTestResults[proxy.id].success ? 'status-ok' : 'status-error'">
+                        {{ rtProxyTestLabel(proxy.id) }}
+                      </span>
+                    </div>
+                  </div>
+                </label>
+                <div v-if="filteredRtProxies.length === 0" class="tools-empty min-h-[120px]">
+                  没有匹配的代理。
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
               <div>
                 <label class="input-label">client_id</label>
                 <input v-model="rtClientId" class="input font-mono text-xs" placeholder="留空使用后端默认" />
               </div>
+              <label class="mt-7 flex items-center gap-2 text-sm text-gray-700 dark:text-dark-200">
+                <input
+                  v-model="rtEnableFingerprint"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                添加 TLS 指纹
+              </label>
               <div>
-                <label class="input-label">并发</label>
-                <input v-model.number="rtConcurrency" class="input" type="number" min="1" max="5" />
+                <label class="input-label">指纹模板</label>
+                <div class="flex gap-2">
+                  <select v-model="rtFingerprintProfileRaw" class="input" :disabled="!rtEnableFingerprint">
+                    <option value="default">系统默认 Node/Codex 兼容</option>
+                    <option value="generated">系统生成 Codex rustls 模板</option>
+                    <option v-if="tlsFingerprintProfiles.length > 0" value="random">随机已有模板</option>
+                    <option v-for="profile in tlsFingerprintProfiles" :key="profile.id" :value="String(profile.id)">
+                      {{ profile.name }}
+                    </option>
+                  </select>
+                  <button
+                    type="button"
+                    class="btn btn-secondary shrink-0"
+                    :disabled="!rtEnableFingerprint || generatingRtFingerprint"
+                    @click="generateAndSelectCodexFingerprint"
+                  >
+                    <Icon name="sparkles" size="sm" :class="generatingRtFingerprint ? 'animate-pulse' : ''" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
+              <div>
+                <label class="input-label">当前代理结果</label>
+                <div class="tools-readout">{{ selectedRtProxyStatusLabel }}</div>
+              </div>
+              <div>
+                <label class="input-label">已选多代理</label>
+                <div class="tools-readout">{{ selectedRtProxyIds.length }} 个</div>
+              </div>
+              <div>
+                <label class="input-label">指纹来源</label>
+                <div class="tools-readout">{{ rtFingerprintSourceLabel }}</div>
               </div>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -254,12 +399,13 @@
                 先预览或直接开始导入，这里会显示提取到的 RT。
               </div>
               <div v-else class="overflow-x-auto">
-                <table class="min-w-[900px] divide-y divide-gray-200 text-sm dark:divide-dark-700">
+                <table class="min-w-[1000px] divide-y divide-gray-200 text-sm dark:divide-dark-700">
                   <thead class="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-dark-900/60 dark:text-dark-400">
                     <tr>
                       <th class="tools-th">#</th>
                       <th class="tools-th">Email</th>
                       <th class="tools-th">RT</th>
+                      <th class="tools-th">代理</th>
                       <th class="tools-th">状态</th>
                       <th class="tools-th">信息</th>
                     </tr>
@@ -269,6 +415,7 @@
                       <td class="tools-td text-gray-500">{{ row.index }}</td>
                       <td class="tools-td">{{ row.email || '-' }}</td>
                       <td class="tools-td font-mono text-xs">{{ maskToken(row.refreshToken) }}</td>
+                      <td class="tools-td max-w-[260px] truncate">{{ rtRowProxyLabel(row) }}</td>
                       <td class="tools-td">
                         <span :class="rtStatusClass(row.status)">{{ rtStatusLabel(row.status) }}</span>
                       </td>
@@ -328,6 +475,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api/admin'
+import type { TLSFingerprintProfile } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
 import { previewClashImport, type ClashProxyPreviewResponse } from './api'
 import type { AdminDataImportResult, CreateAccountRequest, Proxy } from '@/types'
@@ -335,12 +483,26 @@ import type { AdminDataImportResult, CreateAccountRequest, Proxy } from '@/types
 type ToolTab = 'proxy' | 'rt' | 'codex'
 type IconName = InstanceType<typeof Icon>['$props']['name']
 type RtStatus = 'pending' | 'running' | 'success' | 'failed'
+type RtProxyMode = 'none' | 'single' | 'round_robin'
+type RtFingerprintProfileRaw = 'default' | 'generated' | 'random' | string
+
+interface ProxyTestResult {
+  success: boolean
+  message: string
+  latency_ms?: number
+  ip_address?: string
+  city?: string
+  region?: string
+  country?: string
+  country_code?: string
+}
 
 interface RtRow {
   id: string
   index: number
   email: string
   refreshToken: string
+  proxyId: number | null
   status: RtStatus
   message: string
 }
@@ -371,18 +533,72 @@ const rtInput = ref('')
 const lastParsedRtInput = ref('')
 const rtRows = ref<RtRow[]>([])
 const importingRt = ref(false)
+const rtProxyMode = ref<RtProxyMode>('none')
 const rtProxyIdRaw = ref('')
+const selectedRtProxyIds = ref<number[]>([])
+const rtProxySearch = ref('')
+const rtProxyTestResults = ref<Record<number, ProxyTestResult>>({})
+const rtTestingProxyIds = ref<Set<number>>(new Set())
+const rtBatchTestingProxies = ref(false)
 const rtClientId = ref('')
-const rtConcurrency = ref(3)
+const rtConcurrency = ref(10)
+const rtImportConcurrency = 3
 const openAIMobileClientId = 'app_LlGpXReQgckcGGUo2JrYvtJK'
+const tlsFingerprintProfiles = ref<TLSFingerprintProfile[]>([])
+const rtEnableFingerprint = ref(false)
+const rtFingerprintProfileRaw = ref<RtFingerprintProfileRaw>('default')
+const generatingRtFingerprint = ref(false)
 
 const selectedRtProxyId = computed(() => {
+  if (rtProxyMode.value !== 'single') return null
   const id = Number.parseInt(rtProxyIdRaw.value, 10)
   return Number.isFinite(id) && id > 0 ? id : null
 })
-const normalizedRtConcurrency = computed(() => Math.min(5, Math.max(1, Number(rtConcurrency.value) || 3)))
+const normalizedRtConcurrency = computed(() => Math.min(100, Math.max(1, Number(rtConcurrency.value) || 10)))
 const rtSuccessCount = computed(() => rtRows.value.filter((row) => row.status === 'success').length)
 const rtFailedCount = computed(() => rtRows.value.filter((row) => row.status === 'failed').length)
+
+const selectedRtProxies = computed(() => {
+  const selected = new Set(selectedRtProxyIds.value)
+  return activeProxies.value.filter((proxy) => selected.has(proxy.id))
+})
+
+const filteredRtProxies = computed(() => {
+  const query = rtProxySearch.value.trim().toLowerCase()
+  if (!query) return activeProxies.value
+  return activeProxies.value.filter((proxy) => {
+    return (
+      proxy.name.toLowerCase().includes(query) ||
+      proxy.host.toLowerCase().includes(query) ||
+      String(proxy.id).includes(query)
+    )
+  })
+})
+
+const rtProxyAssignmentLabel = computed(() => {
+  if (rtProxyMode.value === 'single') {
+    return selectedRtProxyId.value ? `指定代理 #${selectedRtProxyId.value}` : '不指定代理'
+  }
+  if (rtProxyMode.value === 'round_robin') {
+    return selectedRtProxyIds.value.length > 0 ? `轮询 ${selectedRtProxyIds.value.length} 个代理` : '轮询代理未选择'
+  }
+  return '不指定代理'
+})
+
+const rtFingerprintLabel = computed(() => (rtEnableFingerprint.value ? '启用 TLS 指纹' : '不设置指纹'))
+const selectedRtProxyStatusLabel = computed(() => {
+  if (!selectedRtProxyId.value) return '-'
+  return rtProxyTestLabel(selectedRtProxyId.value)
+})
+const rtFingerprintSourceLabel = computed(() => {
+  if (!rtEnableFingerprint.value) return '-'
+  if (rtFingerprintProfileRaw.value === 'default') return '内置默认'
+  if (rtFingerprintProfileRaw.value === 'generated') return '系统生成 Codex 模板'
+  if (rtFingerprintProfileRaw.value === 'random') return '随机已有模板'
+  const id = Number.parseInt(rtFingerprintProfileRaw.value, 10)
+  const profile = tlsFingerprintProfiles.value.find((item) => item.id === id)
+  return profile ? profile.name : `模板 #${rtFingerprintProfileRaw.value}`
+})
 
 const codexBaseTouched = ref(false)
 const codexBaseUrl = ref('')
@@ -456,6 +672,9 @@ const parseRtInput = () => {
     appStore.showWarning('没有提取到 rt_ 或 rt- token')
     return
   }
+  if (rtProxyMode.value === 'round_robin' && selectedRtProxyIds.value.length > 0) {
+    assignRtProxies(false)
+  }
   appStore.showSuccess(`提取到 ${rows.length} 条 RT`)
 }
 
@@ -465,6 +684,13 @@ const importRtRows = async () => {
   }
   const rows = rtRows.value
   if (rows.length === 0) return
+  if (rtProxyMode.value === 'round_robin') {
+    if (selectedRtProxyIds.value.length === 0) {
+      appStore.showWarning('请选择至少一个代理用于自动分配')
+      return
+    }
+    assignRtProxies(false)
+  }
 
   importingRt.value = true
   rows.forEach((row) => {
@@ -474,7 +700,10 @@ const importRtRows = async () => {
   rtRows.value = [...rows]
 
   try {
-    await runWithConcurrency(rows, normalizedRtConcurrency.value, importOneRtRow)
+    const fingerprintProfileId = await resolveRtFingerprintProfileId()
+    await runWithConcurrency(rows, rtImportConcurrency, (row, index) =>
+      importOneRtRow(row, index, fingerprintProfileId)
+    )
     const success = rtSuccessCount.value
     const failed = rtFailedCount.value
     if (success > 0 && failed === 0) {
@@ -484,23 +713,26 @@ const importRtRows = async () => {
     } else {
       appStore.showError('RT 导入失败')
     }
+  } catch (error) {
+    appStore.showError(errorMessage(error, 'RT 导入失败'))
   } finally {
     importingRt.value = false
   }
 }
 
-const importOneRtRow = async (row: RtRow) => {
+const importOneRtRow = async (row: RtRow, index: number, fingerprintProfileId: number | null) => {
   updateRtRow(row, { status: 'running', message: '刷新 token 中...' })
   try {
     const clientId = rtClientId.value.trim() || undefined
+    const proxyId = resolveRtRowProxyId(row, index)
     const tokenInfo = await adminAPI.accounts.refreshOpenAIToken(
       row.refreshToken,
-      selectedRtProxyId.value,
+      proxyId,
       '/admin/openai/refresh-token',
       clientId
     )
     const credentials = buildOpenAICredentials(tokenInfo, row.refreshToken, clientId)
-    const extra = buildOpenAIExtra(tokenInfo)
+    const extra = buildOpenAIExtra(tokenInfo, fingerprintProfileId)
     const email = readString(tokenInfo, 'email') || row.email
     const accountName = email || `OpenAI OAuth Account #${row.index}`
     const payload: CreateAccountRequest = {
@@ -510,8 +742,8 @@ const importOneRtRow = async (row: RtRow) => {
       type: 'oauth',
       credentials,
       extra,
-      proxy_id: selectedRtProxyId.value,
-      concurrency: 10,
+      proxy_id: proxyId,
+      concurrency: normalizedRtConcurrency.value,
       priority: 1,
       rate_multiplier: 1,
       group_ids: [],
@@ -519,7 +751,8 @@ const importOneRtRow = async (row: RtRow) => {
       auto_pause_on_expired: true
     }
     await adminAPI.accounts.create(payload)
-    updateRtRow(row, { status: 'success', message: `已创建 ${accountName}` })
+    const proxySuffix = proxyId ? ` · 代理 #${proxyId}` : ''
+    updateRtRow(row, { status: 'success', message: `已创建 ${accountName}${proxySuffix}` })
   } catch (error) {
     updateRtRow(row, { status: 'failed', message: errorMessage(error, '导入失败') })
   }
@@ -530,6 +763,14 @@ const loadActiveProxies = async () => {
     activeProxies.value = await adminAPI.proxies.getAllWithCount()
   } catch {
     activeProxies.value = []
+  }
+}
+
+const loadTLSFingerprintProfiles = async () => {
+  try {
+    tlsFingerprintProfiles.value = await adminAPI.tlsFingerprintProfiles.list()
+  } catch {
+    tlsFingerprintProfiles.value = []
   }
 }
 
@@ -551,6 +792,7 @@ const extractRtRows = (input: string): RtRow[] => {
         index: rows.length + 1,
         email,
         refreshToken: token,
+        proxyId: null,
         status: 'pending',
         message: ''
       })
@@ -569,6 +811,7 @@ const extractRtRows = (input: string): RtRow[] => {
       index: rows.length + 1,
       email: allEmails[index] || '',
       refreshToken: token,
+      proxyId: null,
       status: 'pending',
       message: ''
     })
@@ -594,6 +837,98 @@ const runWithConcurrency = async <T,>(
 const updateRtRow = (row: RtRow, patch: Partial<RtRow>) => {
   Object.assign(row, patch)
   rtRows.value = [...rtRows.value]
+}
+
+const toggleRtProxySelection = (proxyId: number, event: Event) => {
+  const checked = (event.target as HTMLInputElement | null)?.checked ?? false
+  const selected = new Set(selectedRtProxyIds.value)
+  if (checked) {
+    selected.add(proxyId)
+  } else {
+    selected.delete(proxyId)
+  }
+  selectedRtProxyIds.value = activeProxies.value
+    .map((proxy) => proxy.id)
+    .filter((id) => selected.has(id))
+  if (rtProxyMode.value === 'round_robin' && rtRows.value.length > 0) {
+    assignRtProxies(false)
+  }
+}
+
+const setRtProxyTesting = (proxyId: number, testing: boolean) => {
+  const next = new Set(rtTestingProxyIds.value)
+  if (testing) {
+    next.add(proxyId)
+  } else {
+    next.delete(proxyId)
+  }
+  rtTestingProxyIds.value = next
+}
+
+const testRtProxy = async (proxyId: number, notify = true) => {
+  if (rtTestingProxyIds.value.has(proxyId)) return
+  setRtProxyTesting(proxyId, true)
+  try {
+    const result = await adminAPI.proxies.testProxy(proxyId)
+    rtProxyTestResults.value = {
+      ...rtProxyTestResults.value,
+      [proxyId]: result
+    }
+    if (notify) {
+      if (result.success) {
+        appStore.showSuccess(result.latency_ms ? `代理可用：${result.latency_ms}ms` : '代理可用')
+      } else {
+        appStore.showError(result.message || '代理测试失败')
+      }
+    }
+  } catch (error) {
+    const result = { success: false, message: errorMessage(error, '代理测试失败') }
+    rtProxyTestResults.value = {
+      ...rtProxyTestResults.value,
+      [proxyId]: result
+    }
+    if (notify) {
+      appStore.showError(result.message)
+    }
+  } finally {
+    setRtProxyTesting(proxyId, false)
+  }
+}
+
+const testAllRtProxies = async () => {
+  if (rtBatchTestingProxies.value || activeProxies.value.length === 0) return
+  const proxyIds = activeProxies.value.map((proxy) => proxy.id)
+  rtBatchTestingProxies.value = true
+  try {
+    await runWithConcurrency(proxyIds, 3, async (proxyId) => {
+      await testRtProxy(proxyId, false)
+    })
+    const passed = proxyIds.filter((id) => rtProxyTestResults.value[id]?.success).length
+    appStore.showSuccess(`代理测试完成：可用 ${passed}/${proxyIds.length}`)
+  } finally {
+    rtBatchTestingProxies.value = false
+  }
+}
+
+const assignRtProxies = (notify: boolean) => {
+  const proxies = selectedRtProxies.value
+  if (proxies.length === 0 || rtRows.value.length === 0) return
+  rtRows.value.forEach((row, index) => {
+    row.proxyId = proxies[index % proxies.length].id
+  })
+  rtRows.value = [...rtRows.value]
+  if (notify) {
+    appStore.showSuccess(`已按顺序分配 ${proxies.length} 个代理到 ${rtRows.value.length} 条 RT`)
+  }
+}
+
+const resolveRtRowProxyId = (row: RtRow, index: number): number | null => {
+  if (rtProxyMode.value === 'single') return selectedRtProxyId.value
+  if (rtProxyMode.value !== 'round_robin') return null
+  if (row.proxyId) return row.proxyId
+  const proxies = selectedRtProxies.value
+  if (proxies.length === 0) return null
+  return proxies[index % proxies.length].id
 }
 
 const buildOpenAICredentials = (
@@ -633,13 +968,76 @@ const buildOpenAICredentials = (
   return credentials
 }
 
-const buildOpenAIExtra = (tokenInfo: Record<string, unknown>): Record<string, unknown> | undefined => {
+const buildOpenAIExtra = (
+  tokenInfo: Record<string, unknown>,
+  fingerprintProfileId: number | null
+): Record<string, unknown> | undefined => {
   const extra: Record<string, unknown> = {}
   for (const key of ['email', 'name', 'privacy_mode']) {
     const value = readString(tokenInfo, key)
     if (value) extra[key] = value
   }
+  if (rtEnableFingerprint.value) {
+    extra.enable_tls_fingerprint = true
+    if (fingerprintProfileId !== null) {
+      extra.tls_fingerprint_profile_id = fingerprintProfileId
+    }
+  }
   return Object.keys(extra).length > 0 ? extra : undefined
+}
+
+const resolveRtFingerprintProfileId = async (): Promise<number | null> => {
+  if (!rtEnableFingerprint.value) return null
+  if (rtFingerprintProfileRaw.value === 'default') return null
+  if (rtFingerprintProfileRaw.value === 'random') return -1
+  if (rtFingerprintProfileRaw.value === 'generated') {
+    const profile = await ensureGeneratedCodexFingerprintProfile()
+    return profile.id
+  }
+  const id = Number.parseInt(rtFingerprintProfileRaw.value, 10)
+  return Number.isFinite(id) && id > 0 ? id : null
+}
+
+const codexGeneratedTLSProfileName = 'Codex reqwest rustls (generated)'
+
+const codexGeneratedTLSProfile = {
+  name: codexGeneratedTLSProfileName,
+  description: 'Generated from Codex source: reqwest 0.12 + rustls 0.23 using the ring crypto provider.',
+  enable_grease: false,
+  cipher_suites: [4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392],
+  curves: [29, 23, 24],
+  point_formats: [0],
+  signature_algorithms: [1027, 1283, 1539, 2052, 2053, 2054, 1025, 1281, 1537],
+  alpn_protocols: ['h2', 'http/1.1'],
+  supported_versions: [772, 771],
+  key_share_groups: [29],
+  psk_modes: [1],
+  extensions: [0, 10, 13, 16, 5, 51, 45, 43]
+}
+
+const ensureGeneratedCodexFingerprintProfile = async (): Promise<TLSFingerprintProfile> => {
+  const existing = tlsFingerprintProfiles.value.find((profile) => profile.name === codexGeneratedTLSProfileName)
+  if (existing) return existing
+
+  generatingRtFingerprint.value = true
+  try {
+    const created = await adminAPI.tlsFingerprintProfiles.create(codexGeneratedTLSProfile)
+    tlsFingerprintProfiles.value = [...tlsFingerprintProfiles.value, created]
+    return created
+  } finally {
+    generatingRtFingerprint.value = false
+  }
+}
+
+const generateAndSelectCodexFingerprint = async () => {
+  if (!rtEnableFingerprint.value) return
+  try {
+    const profile = await ensureGeneratedCodexFingerprintProfile()
+    rtFingerprintProfileRaw.value = String(profile.id)
+    appStore.showSuccess(`已选择指纹模板：${profile.name}`)
+  } catch (error) {
+    appStore.showError(errorMessage(error, '生成指纹失败'))
+  }
 }
 
 const readString = (source: Record<string, unknown>, key: string): string => {
@@ -667,6 +1065,25 @@ const normalizeExpiresAt = (expiresAt: unknown, expiresIn: unknown): string => {
 const proxyLabel = (proxy: Proxy) => {
   const count = typeof proxy.account_count === 'number' ? ` · ${proxy.account_count} 账号` : ''
   return `#${proxy.id} ${proxy.name} · ${proxy.protocol}://${proxy.host}:${proxy.port}${count}`
+}
+
+const rtProxyTestLabel = (proxyId: number) => {
+  const result = rtProxyTestResults.value[proxyId]
+  if (!result) return '未测试'
+  if (!result.success) return '失败'
+  const parts = [result.country, result.latency_ms ? `${result.latency_ms}ms` : '可用'].filter(Boolean)
+  return parts.join(' · ')
+}
+
+const rtRowProxyLabel = (row: RtRow) => {
+  const proxyId = rtProxyMode.value === 'round_robin'
+    ? row.proxyId
+    : rtProxyMode.value === 'single'
+      ? selectedRtProxyId.value
+      : null
+  if (!proxyId) return '-'
+  const proxy = activeProxies.value.find((item) => item.id === proxyId)
+  return proxy ? proxyLabel(proxy) : `#${proxyId}`
 }
 
 const maskToken = (token: string) => {
@@ -806,6 +1223,7 @@ const errorMessage = (error: unknown, fallback: string) => {
 
 onMounted(() => {
   void loadActiveProxies()
+  void loadTLSFingerprintProfiles()
 })
 </script>
 
@@ -824,6 +1242,10 @@ onMounted(() => {
 
 .tools-description {
   @apply mt-1 text-sm text-gray-500 dark:text-dark-400;
+}
+
+.tools-panel {
+  @apply rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-dark-700 dark:bg-dark-900/40;
 }
 
 .tools-tab {
@@ -856,6 +1278,10 @@ onMounted(() => {
 
 .tools-code {
   @apply rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700 dark:bg-dark-800 dark:text-dark-200;
+}
+
+.tools-readout {
+  @apply flex min-h-[38px] items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-200;
 }
 
 .status-ok {
