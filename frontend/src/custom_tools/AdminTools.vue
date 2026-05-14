@@ -429,6 +429,177 @@
         </div>
       </section>
 
+      <section v-else-if="activeTab === 'guard'" class="tools-surface">
+        <div class="tools-section-header">
+          <div>
+            <h2 class="tools-title">Codex 配额保护器</h2>
+            <p class="tools-description">当 OpenAI OAuth 账号的 Codex 用量接近打满时，自动暂停调度，按 reset_at 自动恢复。</p>
+          </div>
+          <div class="tools-badges">
+            <span class="tools-badge">{{ codexQuotaGuardStatus?.running ? '运行中' : '未启动' }}</span>
+            <span class="tools-badge">来源 {{ codexQuotaGuardSourceLabel }}</span>
+            <span class="tools-badge">缓存 {{ codexQuotaGuardStatus?.admin_api_key_cached ? '已持有 Key' : '无 Key' }}</span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,0.88fr)_minmax(0,1.12fr)]">
+          <div class="space-y-4">
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <label class="mt-7 flex items-center gap-2 text-sm text-gray-700 dark:text-dark-200">
+                <input
+                  v-model="codexQuotaGuardEnabled"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                启用后台保护
+              </label>
+              <label class="mt-7 flex items-center gap-2 text-sm text-gray-700 dark:text-dark-200">
+                <input
+                  v-model="codexQuotaGuardDryRun"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
+                Dry Run
+              </label>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
+              <div>
+                <label class="input-label">保留百分比</label>
+                <input v-model.number="codexQuotaGuardReservePercent" class="input" type="number" min="0" max="99" />
+              </div>
+              <div>
+                <label class="input-label">扫描间隔 (秒)</label>
+                <input v-model.number="codexQuotaGuardIntervalSeconds" class="input" type="number" min="10" max="3600" />
+              </div>
+              <div>
+                <label class="input-label">账号类型</label>
+                <div class="tools-readout">OpenAI OAuth</div>
+              </div>
+            </div>
+
+            <div>
+              <label class="input-label">x-api-key（可选）</label>
+              <input
+                v-model="codexQuotaGuardAPIKey"
+                class="input font-mono text-xs"
+                type="password"
+                placeholder="sk-admin-..."
+                autocomplete="off"
+              />
+              <p class="input-hint">仅本次启动请求使用；成功后立即清空，不回显、不持久化。</p>
+            </div>
+
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="btn btn-primary"
+                :disabled="codexQuotaGuardOperating"
+                @click="startCodexQuotaGuardTask"
+              >
+                <Icon name="play" size="sm" />
+                启动 / 更新
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                :disabled="codexQuotaGuardOperating"
+                @click="scanCodexQuotaGuardTask"
+              >
+                <Icon name="search" size="sm" />
+                立即扫描
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                :disabled="codexQuotaGuardOperating"
+                @click="releaseCodexQuotaGuardTask"
+              >
+                <Icon name="lock" size="sm" />
+                释放 Guard 封禁
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                :disabled="codexQuotaGuardOperating"
+                @click="stopCodexQuotaGuardTask"
+              >
+                <Icon name="ban" size="sm" />
+                停止
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                :disabled="codexQuotaGuardLoading || codexQuotaGuardOperating"
+                @click="loadCodexQuotaGuardStatus"
+              >
+                <Icon name="refresh" size="sm" />
+                刷新状态
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-4">
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <div>
+                <label class="input-label">最近扫描</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_run_at || '-' }}</div>
+              </div>
+              <div>
+                <label class="input-label">最近错误</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_error || '-' }}</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-4">
+              <div>
+                <label class="input-label">扫描账号</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_scanned_accounts ?? 0 }}</div>
+              </div>
+              <div>
+                <label class="input-label">候选账号</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_scan_candidates ?? 0 }}</div>
+              </div>
+              <div>
+                <label class="input-label">最近封禁</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_blocked_count ?? 0 }}</div>
+              </div>
+              <div>
+                <label class="input-label">最近恢复</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_released_count ?? 0 }}</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <div>
+                <label class="input-label">最近封禁账号 ID</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_blocked_ids?.length ? codexQuotaGuardStatus.last_blocked_ids.join(', ') : '-' }}</div>
+              </div>
+              <div>
+                <label class="input-label">最近恢复账号 ID</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.last_released_ids?.length ? codexQuotaGuardStatus.last_released_ids.join(', ') : '-' }}</div>
+              </div>
+            </div>
+
+            <div v-if="codexQuotaGuardLastAction" class="tools-panel">
+              <h3 class="text-sm font-semibold text-gray-900 dark:text-white">最近动作</h3>
+              <p class="mt-2 text-sm text-gray-700 dark:text-dark-200">
+                扫描 {{ codexQuotaGuardLastAction.scanned_accounts }}，候选 {{ codexQuotaGuardLastAction.candidate_count }}，封禁 {{ codexQuotaGuardLastAction.blocked_count }}，恢复 {{ codexQuotaGuardLastAction.released_count }}
+              </p>
+              <p v-if="codexQuotaGuardLastAction.blocked_ids?.length" class="mt-2 text-sm text-gray-700 dark:text-dark-200">
+                最近封禁账号：{{ codexQuotaGuardLastAction.blocked_ids.join(', ') }}
+              </p>
+              <p v-if="codexQuotaGuardLastAction.released_ids?.length" class="mt-2 text-sm text-gray-700 dark:text-dark-200">
+                最近恢复账号：{{ codexQuotaGuardLastAction.released_ids.join(', ') }}
+              </p>
+              <p v-if="codexQuotaGuardLastAction.errors?.length" class="mt-2 text-sm text-red-700 dark:text-red-300">
+                {{ codexQuotaGuardLastAction.errors.join('；') }}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section v-else class="tools-surface">
         <div class="tools-section-header">
           <div>
@@ -477,10 +648,20 @@ import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api/admin'
 import type { TLSFingerprintProfile } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
-import { previewClashImport, type ClashProxyPreviewResponse } from './api'
+import {
+  getCodexQuotaGuardStatus,
+  previewClashImport,
+  releaseCodexQuotaGuard,
+  scanCodexQuotaGuard,
+  startCodexQuotaGuard,
+  stopCodexQuotaGuard,
+  type ClashProxyPreviewResponse,
+  type CodexQuotaGuardScanResponse,
+  type CodexQuotaGuardStatus
+} from './api'
 import type { AdminDataImportResult, CreateAccountRequest, Proxy } from '@/types'
 
-type ToolTab = 'proxy' | 'rt' | 'codex'
+type ToolTab = 'proxy' | 'rt' | 'guard' | 'codex'
 type IconName = InstanceType<typeof Icon>['$props']['name']
 type RtStatus = 'pending' | 'running' | 'success' | 'failed'
 type RtProxyMode = 'none' | 'single' | 'round_robin'
@@ -512,6 +693,7 @@ const appStore = useAppStore()
 const tabs: Array<{ id: ToolTab; label: string; icon: IconName }> = [
   { id: 'proxy', label: '代理导入', icon: 'server' },
   { id: 'rt', label: 'OpenAI RT 导入', icon: 'key' },
+  { id: 'guard', label: 'Codex 配额保护器', icon: 'shield' },
   { id: 'codex', label: 'Codex 配置脚本', icon: 'terminal' }
 ]
 
@@ -548,6 +730,15 @@ const tlsFingerprintProfiles = ref<TLSFingerprintProfile[]>([])
 const rtEnableFingerprint = ref(false)
 const rtFingerprintProfileRaw = ref<RtFingerprintProfileRaw>('default')
 const generatingRtFingerprint = ref(false)
+const codexQuotaGuardLoading = ref(false)
+const codexQuotaGuardOperating = ref(false)
+const codexQuotaGuardStatus = ref<CodexQuotaGuardStatus | null>(null)
+const codexQuotaGuardLastAction = ref<CodexQuotaGuardScanResponse | null>(null)
+const codexQuotaGuardEnabled = ref(true)
+const codexQuotaGuardDryRun = ref(false)
+const codexQuotaGuardReservePercent = ref(1)
+const codexQuotaGuardIntervalSeconds = ref(60)
+const codexQuotaGuardAPIKey = ref('')
 
 const selectedRtProxyId = computed(() => {
   if (rtProxyMode.value !== 'single') return null
@@ -598,6 +789,17 @@ const rtFingerprintSourceLabel = computed(() => {
   const id = Number.parseInt(rtFingerprintProfileRaw.value, 10)
   const profile = tlsFingerprintProfiles.value.find((item) => item.id === id)
   return profile ? profile.name : `模板 #${rtFingerprintProfileRaw.value}`
+})
+const codexQuotaGuardSourceLabel = computed(() => {
+  const source = codexQuotaGuardStatus.value?.admin_api_key_source || 'missing'
+  switch (source) {
+    case 'provided':
+      return 'x-api-key'
+    case 'auto_created':
+      return '自动创建'
+    default:
+      return '缺失'
+  }
 })
 
 const codexBaseTouched = ref(false)
@@ -771,6 +973,83 @@ const loadTLSFingerprintProfiles = async () => {
     tlsFingerprintProfiles.value = await adminAPI.tlsFingerprintProfiles.list()
   } catch {
     tlsFingerprintProfiles.value = []
+  }
+}
+
+const loadCodexQuotaGuardStatus = async () => {
+  codexQuotaGuardLoading.value = true
+  try {
+    const status = await getCodexQuotaGuardStatus()
+    codexQuotaGuardStatus.value = status
+    codexQuotaGuardEnabled.value = status.config.enabled
+    codexQuotaGuardDryRun.value = status.config.dry_run
+    codexQuotaGuardReservePercent.value = status.config.reserve_percent
+    codexQuotaGuardIntervalSeconds.value = status.config.interval_seconds
+  } catch (error) {
+    appStore.showError(errorMessage(error, '读取保护器状态失败'))
+  } finally {
+    codexQuotaGuardLoading.value = false
+  }
+}
+
+const startCodexQuotaGuardTask = async () => {
+  codexQuotaGuardOperating.value = true
+  try {
+    codexQuotaGuardStatus.value = await startCodexQuotaGuard(
+      {
+        enabled: codexQuotaGuardEnabled.value,
+        reserve_percent: codexQuotaGuardReservePercent.value,
+        windows: ['5h', '7d'],
+        interval_seconds: codexQuotaGuardIntervalSeconds.value,
+        account_types: ['oauth'],
+        dry_run: codexQuotaGuardDryRun.value
+      },
+      codexQuotaGuardAPIKey.value
+    )
+    codexQuotaGuardAPIKey.value = ''
+    appStore.showSuccess('Codex 配额保护器已启动')
+  } catch (error) {
+    appStore.showError(errorMessage(error, '启动保护器失败'))
+  } finally {
+    codexQuotaGuardOperating.value = false
+  }
+}
+
+const stopCodexQuotaGuardTask = async () => {
+  codexQuotaGuardOperating.value = true
+  try {
+    codexQuotaGuardStatus.value = await stopCodexQuotaGuard()
+    appStore.showSuccess('Codex 配额保护器已停止')
+  } catch (error) {
+    appStore.showError(errorMessage(error, '停止保护器失败'))
+  } finally {
+    codexQuotaGuardOperating.value = false
+  }
+}
+
+const scanCodexQuotaGuardTask = async () => {
+  codexQuotaGuardOperating.value = true
+  try {
+    codexQuotaGuardLastAction.value = await scanCodexQuotaGuard()
+    await loadCodexQuotaGuardStatus()
+    appStore.showSuccess('已完成一次扫描')
+  } catch (error) {
+    appStore.showError(errorMessage(error, '扫描失败'))
+  } finally {
+    codexQuotaGuardOperating.value = false
+  }
+}
+
+const releaseCodexQuotaGuardTask = async () => {
+  codexQuotaGuardOperating.value = true
+  try {
+    codexQuotaGuardLastAction.value = await releaseCodexQuotaGuard()
+    await loadCodexQuotaGuardStatus()
+    appStore.showSuccess('已释放 Guard 封禁账号')
+  } catch (error) {
+    appStore.showError(errorMessage(error, '释放失败'))
+  } finally {
+    codexQuotaGuardOperating.value = false
   }
 }
 
@@ -1224,6 +1503,7 @@ const errorMessage = (error: unknown, fallback: string) => {
 onMounted(() => {
   void loadActiveProxies()
   void loadTLSFingerprintProfiles()
+  void loadCodexQuotaGuardStatus()
 })
 </script>
 
