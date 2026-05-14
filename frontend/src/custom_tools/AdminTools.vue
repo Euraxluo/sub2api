@@ -551,7 +551,7 @@
               </div>
             </div>
 
-            <div class="grid grid-cols-1 gap-3 xl:grid-cols-4">
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-5">
               <div>
                 <label class="input-label">扫描账号</label>
                 <div class="tools-readout">{{ codexQuotaGuardStatus?.last_scanned_accounts ?? 0 }}</div>
@@ -568,9 +568,13 @@
                 <label class="input-label">最近恢复</label>
                 <div class="tools-readout">{{ codexQuotaGuardStatus?.last_released_count ?? 0 }}</div>
               </div>
+              <div>
+                <label class="input-label">当前封禁</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.current_managed_count ?? 0 }}</div>
+              </div>
             </div>
 
-            <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
               <div>
                 <label class="input-label">最近封禁账号 ID</label>
                 <div class="tools-readout">{{ codexQuotaGuardStatus?.last_blocked_ids?.length ? codexQuotaGuardStatus.last_blocked_ids.join(', ') : '-' }}</div>
@@ -578,6 +582,10 @@
               <div>
                 <label class="input-label">最近恢复账号 ID</label>
                 <div class="tools-readout">{{ codexQuotaGuardStatus?.last_released_ids?.length ? codexQuotaGuardStatus.last_released_ids.join(', ') : '-' }}</div>
+              </div>
+              <div>
+                <label class="input-label">当前封禁账号 ID</label>
+                <div class="tools-readout">{{ codexQuotaGuardStatus?.current_managed_ids?.length ? codexQuotaGuardStatus.current_managed_ids.join(', ') : '-' }}</div>
               </div>
             </div>
 

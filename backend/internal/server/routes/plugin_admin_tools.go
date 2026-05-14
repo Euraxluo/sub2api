@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,6 +160,8 @@ type codexQuotaGuardStatusResponse struct {
 	LastReleasedIDs     []int64               `json:"last_released_ids,omitempty"`
 	LastScanCandidates  int                   `json:"last_scan_candidates"`
 	LastScannedAccounts int                   `json:"last_scanned_accounts"`
+	CurrentManagedCount int                   `json:"current_managed_count"`
+	CurrentManagedIDs   []int64               `json:"current_managed_ids,omitempty"`
 }
 
 type codexQuotaGuardScanResponse struct {
@@ -189,11 +192,12 @@ type codexQuotaGuardManager struct {
 	lastReleasedIDs     []int64
 	lastScanCandidates  int
 	lastScannedAccounts int
+	currentManagedCount int
+	currentManagedIDs   []int64
 	stopCh              chan struct{}
 }
 
 type codexGuardAccountsEnvelope struct {
-	Code int `json:"code"`
 	Data struct {
 		Items []codexGuardAccount `json:"items"`
 		Total int64               `json:"total"`
@@ -220,7 +224,6 @@ type codexGuardBulkUpdatePayload struct {
 }
 
 type codexGuardAdminAPIKeyStatusEnvelope struct {
-	Code int `json:"code"`
 	Data struct {
 		Exists bool `json:"exists"`
 	} `json:"data"`
@@ -228,7 +231,6 @@ type codexGuardAdminAPIKeyStatusEnvelope struct {
 }
 
 type codexGuardAdminAPIKeyRegenerateEnvelope struct {
-	Code int `json:"code"`
 	Data struct {
 		Key string `json:"key"`
 	} `json:"data"`
@@ -610,6 +612,8 @@ func (m *codexQuotaGuardManager) snapshotLocked() codexQuotaGuardStatusResponse 
 		LastReleasedIDs:     append([]int64(nil), m.lastReleasedIDs...),
 		LastScanCandidates:  m.lastScanCandidates,
 		LastScannedAccounts: m.lastScannedAccounts,
+		CurrentManagedCount: m.currentManagedCount,
+		CurrentManagedIDs:   append([]int64(nil), m.currentManagedIDs...),
 	}
 	if strings.TrimSpace(m.adminAPIKeySource) != "" {
 		resp.AdminAPIKeySource = m.adminAPIKeySource
@@ -625,15 +629,38 @@ func (m *codexQuotaGuardManager) resolveAdminAPIKey(c *gin.Context, cfg codexQuo
 		return key, codexQuotaGuardSourceProvided, nil
 	}
 
+	m.mu.Lock()
+	cachedKey := strings.TrimSpace(m.adminAPIKey)
+	cachedSource := strings.TrimSpace(m.adminAPIKeySource)
+	m.mu.Unlock()
+	if cachedKey != "" {
+		if cachedSource == "" {
+			cachedSource = codexQuotaGuardSourceProvided
+		}
+		return cachedKey, cachedSource, nil
+	}
+
 	if !cfg.Enabled {
 		return "", codexQuotaGuardSourceMissing, nil
 	}
 
 	statusURL := buildCodexQuotaGuardLocalURL(c, "/api/v1/admin/settings/admin-api-key")
-	keyResp, statusCode, err := doCodexQuotaGuardJSONRequest[codexGuardAdminAPIKeyStatusEnvelope](c.Request.Context(), http.MethodGet, statusURL, "", nil)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, statusURL, nil)
 	if err != nil {
 		return "", codexQuotaGuardSourceMissing, err
 	}
+	copyCodexQuotaGuardAuthHeaders(c, req)
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", codexQuotaGuardSourceMissing, fmt.Errorf("query admin api key status failed: %w", err)
+	}
+	defer resp.Body.Close()
+	var keyResp codexGuardAdminAPIKeyStatusEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&keyResp); err != nil {
+		return "", codexQuotaGuardSourceMissing, fmt.Errorf("decode admin api key status failed: %w", err)
+	}
+	statusCode := resp.StatusCode
 	if statusCode >= http.StatusBadRequest {
 		return "", codexQuotaGuardSourceMissing, fmt.Errorf("query admin api key status failed: HTTP %d", statusCode)
 	}
@@ -642,24 +669,24 @@ func (m *codexQuotaGuardManager) resolveAdminAPIKey(c *gin.Context, cfg codexQuo
 	}
 
 	createURL := buildCodexQuotaGuardLocalURL(c, "/api/v1/admin/settings/admin-api-key/regenerate")
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, createURL, bytes.NewReader([]byte("{}")))
+	createReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, createURL, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return "", codexQuotaGuardSourceMissing, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	copyCodexQuotaGuardAuthHeaders(c, req)
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	createReq.Header.Set("Content-Type", "application/json")
+	copyCodexQuotaGuardAuthHeaders(c, createReq)
+	createClient := &http.Client{Timeout: 20 * time.Second}
+	createHTTPResp, err := createClient.Do(createReq)
 	if err != nil {
 		return "", codexQuotaGuardSourceMissing, fmt.Errorf("create admin api key failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer createHTTPResp.Body.Close()
 	var createResp codexGuardAdminAPIKeyRegenerateEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
+	if err := json.NewDecoder(createHTTPResp.Body).Decode(&createResp); err != nil {
 		return "", codexQuotaGuardSourceMissing, fmt.Errorf("decode created admin api key failed: %w", err)
 	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		return "", codexQuotaGuardSourceMissing, fmt.Errorf("create admin api key failed: HTTP %d", resp.StatusCode)
+	if createHTTPResp.StatusCode >= http.StatusBadRequest {
+		return "", codexQuotaGuardSourceMissing, fmt.Errorf("create admin api key failed: HTTP %d", createHTTPResp.StatusCode)
 	}
 	if strings.TrimSpace(createResp.Data.Key) == "" {
 		return "", codexQuotaGuardSourceMissing, errors.New("created admin api key is empty")
@@ -714,7 +741,7 @@ func (m *codexQuotaGuardManager) runScan(ctx context.Context) codexQuotaGuardSca
 	}
 	if apiKey == "" {
 		result.Errors = append(result.Errors, "admin api key is missing")
-		m.recordScanResult(result, "admin api key is missing")
+		m.recordScanResult(result, "admin api key is missing", map[int64]struct{}{})
 		return result
 	}
 
@@ -724,7 +751,7 @@ func (m *codexQuotaGuardManager) runScan(ctx context.Context) codexQuotaGuardSca
 		if isCodexQuotaGuardAuthError(err) {
 			result.StoppedOnAuthErr = true
 		}
-		m.recordScanResult(result, err.Error())
+		m.recordScanResult(result, err.Error(), map[int64]struct{}{})
 		return result
 	}
 	result.ScannedAccounts = len(accounts)
@@ -732,6 +759,13 @@ func (m *codexQuotaGuardManager) runScan(ctx context.Context) codexQuotaGuardSca
 	var blockIDs []int64
 	var releaseIDs []int64
 	var scanErrors []string
+	currentManaged := make(map[int64]struct{})
+
+	for _, account := range accounts {
+		if isCodexGuardManaged(account) {
+			currentManaged[account.ID] = struct{}{}
+		}
+	}
 
 	for _, account := range accounts {
 		decision, ok := evaluateCodexQuotaGuardDecision(account, cfg, time.Now().UTC())
@@ -742,7 +776,7 @@ func (m *codexQuotaGuardManager) runScan(ctx context.Context) codexQuotaGuardSca
 		switch decision.Action {
 		case "block":
 			if !cfg.DryRun {
-				if err := m.bulkUpdateAccount(ctx, apiKey, account.ID, false, decision.Extra); err != nil {
+				if err := m.bulkUpdateAccount(ctx, baseURL, apiKey, account.ID, false, decision.Extra); err != nil {
 					scanErrors = append(scanErrors, fmt.Sprintf("block account %d failed: %v", account.ID, err))
 					if isCodexQuotaGuardAuthError(err) {
 						result.StoppedOnAuthErr = true
@@ -752,9 +786,10 @@ func (m *codexQuotaGuardManager) runScan(ctx context.Context) codexQuotaGuardSca
 				}
 			}
 			blockIDs = append(blockIDs, account.ID)
+			currentManaged[account.ID] = struct{}{}
 		case "release":
 			if !cfg.DryRun {
-				if err := m.bulkUpdateAccount(ctx, apiKey, account.ID, true, decision.Extra); err != nil {
+				if err := m.bulkUpdateAccount(ctx, baseURL, apiKey, account.ID, true, decision.Extra); err != nil {
 					scanErrors = append(scanErrors, fmt.Sprintf("release account %d failed: %v", account.ID, err))
 					if isCodexQuotaGuardAuthError(err) {
 						result.StoppedOnAuthErr = true
@@ -764,6 +799,7 @@ func (m *codexQuotaGuardManager) runScan(ctx context.Context) codexQuotaGuardSca
 				}
 			}
 			releaseIDs = append(releaseIDs, account.ID)
+			delete(currentManaged, account.ID)
 		}
 		if result.StoppedOnAuthErr {
 			break
@@ -776,7 +812,7 @@ func (m *codexQuotaGuardManager) runScan(ctx context.Context) codexQuotaGuardSca
 	result.ReleasedIDs = append([]int64(nil), releaseIDs...)
 	result.Errors = scanErrors
 	lastErr := strings.Join(scanErrors, "; ")
-	m.recordScanResult(result, lastErr)
+	m.recordScanResult(result, lastErr, currentManaged)
 	return result
 }
 
@@ -800,15 +836,17 @@ func (m *codexQuotaGuardManager) releaseManaged(ctx context.Context) codexQuotaG
 		return result
 	}
 	now := time.Now().UTC()
+	currentManaged := make(map[int64]struct{})
 	for _, account := range accounts {
 		if !isCodexGuardManaged(account) {
 			continue
 		}
+		currentManaged[account.ID] = struct{}{}
 		extra := map[string]any{
 			"codex_quota_guard_managed":     false,
 			"codex_quota_guard_released_at": now.Format(time.RFC3339),
 		}
-		if err := m.bulkUpdateAccount(ctx, apiKey, account.ID, true, extra); err != nil {
+		if err := m.bulkUpdateAccount(ctx, baseURL, apiKey, account.ID, true, extra); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("release account %d failed: %v", account.ID, err))
 			if isCodexQuotaGuardAuthError(err) {
 				result.StoppedOnAuthErr = true
@@ -818,11 +856,13 @@ func (m *codexQuotaGuardManager) releaseManaged(ctx context.Context) codexQuotaG
 		}
 		result.ReleasedCount++
 		result.ReleasedIDs = append(result.ReleasedIDs, account.ID)
+		delete(currentManaged, account.ID)
 	}
+	m.recordScanResult(result, strings.Join(result.Errors, "; "), currentManaged)
 	return result
 }
 
-func (m *codexQuotaGuardManager) recordScanResult(result codexQuotaGuardScanResponse, lastErr string) {
+func (m *codexQuotaGuardManager) recordScanResult(result codexQuotaGuardScanResponse, lastErr string, currentManaged map[int64]struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastRunAt = time.Now().UTC()
@@ -833,6 +873,12 @@ func (m *codexQuotaGuardManager) recordScanResult(result codexQuotaGuardScanResp
 	m.lastScanCandidates = result.CandidateCount
 	m.lastScannedAccounts = result.ScannedAccounts
 	m.lastError = strings.TrimSpace(lastErr)
+	m.currentManagedIDs = make([]int64, 0, len(currentManaged))
+	for id := range currentManaged {
+		m.currentManagedIDs = append(m.currentManagedIDs, id)
+	}
+	slices.Sort(m.currentManagedIDs)
+	m.currentManagedCount = len(m.currentManagedIDs)
 }
 
 func (m *codexQuotaGuardManager) fetchAccounts(ctx context.Context, baseURL, apiKey string) ([]codexGuardAccount, error) {
@@ -842,7 +888,6 @@ func (m *codexQuotaGuardManager) fetchAccounts(ctx context.Context, baseURL, api
 		values := url.Values{}
 		values.Set("platform", service.PlatformOpenAI)
 		values.Set("type", service.AccountTypeOAuth)
-		values.Set("status", service.StatusActive)
 		values.Set("page", strconv.Itoa(page))
 		values.Set("page_size", strconv.Itoa(codexQuotaGuardPageSize))
 		target := strings.TrimRight(baseURL, "/") + "/api/v1/admin/accounts?" + values.Encode()
@@ -865,13 +910,14 @@ func (m *codexQuotaGuardManager) fetchAccounts(ctx context.Context, baseURL, api
 	return out, nil
 }
 
-func (m *codexQuotaGuardManager) bulkUpdateAccount(ctx context.Context, apiKey string, accountID int64, schedulable bool, extra map[string]any) error {
+func (m *codexQuotaGuardManager) bulkUpdateAccount(ctx context.Context, baseURL, apiKey string, accountID int64, schedulable bool, extra map[string]any) error {
 	payload := codexGuardBulkUpdatePayload{
 		AccountIDs:  []int64{accountID},
 		Schedulable: &schedulable,
 		Extra:       extra,
 	}
-	_, statusCode, err := doCodexQuotaGuardJSONRequest[map[string]any](ctx, http.MethodPost, "/api/v1/admin/accounts/bulk-update", apiKey, payload)
+	target := strings.TrimRight(baseURL, "/") + "/api/v1/admin/accounts/bulk-update"
+	_, statusCode, err := doCodexQuotaGuardJSONRequest[map[string]any](ctx, http.MethodPost, target, apiKey, payload)
 	if err != nil {
 		return err
 	}
@@ -919,7 +965,7 @@ func evaluateCodexQuotaGuardDecision(account codexGuardAccount, cfg codexQuotaGu
 		if usedPercent < threshold {
 			continue
 		}
-		resetAt := parseCodexQuotaGuardTime(account.Extra[fmt.Sprintf("codex_%s_reset_at", window)])
+		resetAt := resolveCodexQuotaGuardResetAt(account.Extra, window, now)
 		if resetAt.IsZero() || !now.Before(resetAt) {
 			continue
 		}
@@ -992,6 +1038,45 @@ func parseCodexQuotaGuardTime(value any) time.Time {
 		return time.Time{}
 	}
 	return parsed.UTC()
+}
+
+func resolveCodexQuotaGuardResetAt(extra map[string]any, window string, now time.Time) time.Time {
+	resetAt := parseCodexQuotaGuardTime(extra[fmt.Sprintf("codex_%s_reset_at", window)])
+	if !resetAt.IsZero() {
+		return resetAt
+	}
+
+	resetAfterSeconds := parseCodexQuotaGuardInt(extra[fmt.Sprintf("codex_%s_reset_after_seconds", window)])
+	if resetAfterSeconds <= 0 {
+		return time.Time{}
+	}
+
+	base := now
+	if updatedAt := parseCodexQuotaGuardTime(extra["codex_usage_updated_at"]); !updatedAt.IsZero() {
+		base = updatedAt
+	}
+	return base.Add(time.Duration(resetAfterSeconds) * time.Second).UTC()
+}
+
+func parseCodexQuotaGuardInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	case json.Number:
+		v, _ := typed.Int64()
+		return int(v)
+	case string:
+		v, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return v
+	default:
+		return 0
+	}
 }
 
 func doCodexQuotaGuardJSONRequest[T any](ctx context.Context, method, rawURL, apiKey string, payload any) (T, int, error) {

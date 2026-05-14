@@ -71,6 +71,8 @@ export interface CodexQuotaGuardStatus {
   last_released_ids?: number[]
   last_scan_candidates: number
   last_scanned_accounts: number
+  current_managed_count: number
+  current_managed_ids?: number[]
 }
 
 export interface CodexQuotaGuardScanResponse {
