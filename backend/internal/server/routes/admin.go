@@ -119,6 +119,9 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+
+		// fork: Admin Tools 插件
+		registerPluginAdminTools(admin)
 	}
 }
 

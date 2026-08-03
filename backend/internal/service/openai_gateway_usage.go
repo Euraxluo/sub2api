@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	pluginruntime "github.com/Wei-Shaw/sub2api/internal/plugin"
 	"go.uber.org/zap"
 )
 
@@ -146,6 +148,13 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if !isGrokVideoUsageResult(result, nil) {
 		ApplyOpenAIImageBillingResolution(result)
 	}
+	if input.Account != nil {
+		mappingModel := strings.TrimSpace(result.UpstreamModel)
+		if mappingModel == "" {
+			mappingModel = strings.TrimSpace(result.Model)
+		}
+		pluginruntime.RecordUsageMappingFromResult(input.Account.ID, mappingModel, result.ReasoningEffort, result.Usage.InputTokens, result.Usage.OutputTokens)
+	}
 
 	// OpenAI input_tokens 是总输入，包含缓存读取和缓存写入明细。
 	// 将三类 token 拆成互斥桶，避免缓存写入同时按普通输入和 cache_write 重复计费。
@@ -240,6 +249,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		).Warn("openai_usage.pricing_missing_record_zero_cost", zap.Error(err))
 		cost = &CostBreakdown{BillingMode: string(BillingModeToken)}
 	}
+	upstreamCost := s.calculateUpstreamQuotaCost(
+		ctx,
+		account.ID,
+		result,
+		tokens,
+		serviceTier,
+	)
+	pluginruntime.RecordUpstreamUsage(account.ID, upstreamCost, openAIUpstreamTokenCount(result.Usage))
 
 	// Determine billing type
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -407,6 +424,69 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 
 	return nil
+}
+
+// calculateUpstreamQuotaCost prices the model that the provider actually
+// receives after the plugin's source-model + source-effort mapping. It uses
+// standard pricing with a 1x multiplier; user/group billing stays on the
+// existing cost path above.
+func (s *OpenAIGatewayService) calculateUpstreamQuotaCost(
+	ctx context.Context,
+	accountID int64,
+	result *OpenAIForwardResult,
+	tokens UsageTokens,
+	serviceTier string,
+) float64 {
+	if s == nil || s.billingService == nil || result == nil {
+		return 0
+	}
+	model := strings.TrimSpace(result.UpstreamModel)
+	if model == "" {
+		model = strings.TrimSpace(result.Model)
+	}
+	effort := ""
+	if result.ReasoningEffort != nil {
+		effort = strings.TrimSpace(*result.ReasoningEffort)
+	}
+	if mapping := pluginruntime.ResolveUsageWithEffort(accountID, model, effort); mapping.Matched && strings.TrimSpace(mapping.Model) != "" {
+		model = strings.TrimSpace(mapping.Model)
+	}
+	if model == "" {
+		return 0
+	}
+	providerCost, err := s.billingService.CalculateCostWithServiceTier(model, tokens, 1, serviceTier)
+	if err != nil || providerCost == nil {
+		return 0
+	}
+	return normalizedUpstreamQuotaCost(providerCost.TotalCost)
+}
+
+func openAIUpstreamTokenCount(usage OpenAIUsage) int64 {
+	inputTokens := int64(maxInt(usage.InputTokens, 0))
+	cacheTokens := int64(maxInt(usage.CacheCreationInputTokens, 0) + maxInt(usage.CacheReadInputTokens, 0))
+	if cacheTokens > inputTokens {
+		inputTokens = cacheTokens
+	}
+	total := saturatingAddInt64(inputTokens, int64(maxInt(usage.OutputTokens, 0)))
+	total = saturatingAddInt64(total, int64(maxInt(usage.ImageInputTokens, 0)))
+	return saturatingAddInt64(total, int64(maxInt(usage.ImageOutputTokens, 0)))
+}
+
+func normalizedUpstreamQuotaCost(costUSD float64) float64 {
+	if costUSD < 0 || math.IsNaN(costUSD) || math.IsInf(costUSD, 0) {
+		return 0
+	}
+	return costUSD
+}
+
+func saturatingAddInt64(left, right int64) int64 {
+	if right <= 0 {
+		return left
+	}
+	if left > math.MaxInt64-right {
+		return math.MaxInt64
+	}
+	return left + right
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(

@@ -14,6 +14,8 @@ ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 ARG NPM_CONFIG_REGISTRY=
+ARG DWS_VERSION=1.0.55
+ARG WXCLAWBOT_VERSION=0.5.2
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -116,6 +118,9 @@ LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
+    curl \
+    bash \
+    git \
     su-exec \
     libpq \
     zstd-libs \
@@ -123,7 +128,15 @@ RUN apk add --no-cache \
     krb5-libs \
     libldap \
     libedit \
+    gcompat \
     && rm -rf /var/cache/apk/*
+
+# CLI runtimes used by the Admin Tools notification channels.
+RUN apk add --no-cache nodejs npm \
+    && npm install --global --omit=dev @larksuite/cli@1.0.80 \
+        dingtalk-workspace-cli@${DWS_VERSION} \
+        @claw-lab/wxclawbot-cli@${WXCLAWBOT_VERSION} \
+    && npm cache clean --force
 
 # Copy pg_dump and psql from the same postgres image used in docker-compose
 # This ensures version consistency between backup tools and the database server

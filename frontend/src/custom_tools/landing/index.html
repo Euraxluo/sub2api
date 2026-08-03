@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sub2API</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f7f6f3;
+        --bg-elevated: #ffffff;
+        --ink: #1f1e1d;
+        --ink-soft: #5c5a57;
+        --ink-faint: #8a8782;
+        --line: rgba(31, 30, 29, 0.08);
+        --accent: #c96442;
+        --accent-deep: #a84b2f;
+        --accent-soft: rgba(201, 100, 66, 0.12);
+        --glow: rgba(201, 100, 66, 0.18);
+        --good: #3f8f6b;
+        --shadow: 0 24px 60px rgba(31, 30, 29, 0.08);
+        --font-display: "Sora", system-ui, sans-serif;
+        --font-body: "Source Sans 3", system-ui, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        font-family: var(--font-body);
+        color: var(--ink);
+        background: var(--bg);
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .page {
+        position: relative;
+        isolation: isolate;
+      }
+
+      .atmosphere {
+        pointer-events: none;
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        background:
+          radial-gradient(ellipse 70% 45% at 10% 8%, rgba(201, 100, 66, 0.14), transparent 58%),
+          radial-gradient(ellipse 50% 40% at 90% 6%, rgba(90, 110, 100, 0.1), transparent 55%),
+          linear-gradient(180deg, #fbfaf7 0%, #f3f1ec 42%, #f7f6f3 100%);
+      }
+
+      .atmosphere::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        opacity: 0.28;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+        mix-blend-mode: soft-light;
+      }
+
+      .wrap {
+        width: min(1120px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 22px 0 0;
+        animation: rise 0.7s ease both;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .brand-mark {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        overflow: hidden;
+        background: linear-gradient(145deg, #d98261, #b24f31);
+        box-shadow: 0 8px 20px rgba(201, 100, 66, 0.28);
+        display: grid;
+        place-items: center;
+        color: white;
+        font-family: var(--font-display);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .brand-mark img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: none;
+      }
+
+      .brand-mark.has-logo {
+        background: var(--bg-elevated);
+      }
+
+      .brand-mark.has-logo img {
+        display: block;
+      }
+
+      .brand-mark.has-logo span {
+        display: none;
+      }
+
+      .brand-name {
+        font-family: var(--font-display);
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .ghost-link {
+        padding: 8px 12px;
+        border-radius: 999px;
+        color: var(--ink-soft);
+        font-size: 14px;
+        font-weight: 500;
+        transition: 0.2s ease;
+      }
+
+      .ghost-link:hover {
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.55);
+      }
+
+      .pill-btn {
+        display: inline-flex;
+        align-items: center;
+        padding: 9px 16px;
+        border-radius: 999px;
+        background: var(--ink);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        transition: 0.2s ease;
+      }
+
+      .pill-btn:hover {
+        background: #000;
+        transform: translateY(-1px);
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 48px;
+        align-items: center;
+        padding: 56px 0 72px;
+      }
+
+      .hero-copy {
+        max-width: 560px;
+        animation: rise 0.8s ease 0.05s both;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 22px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent-deep);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .eyebrow-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px rgba(201, 100, 66, 0.15);
+      }
+
+      .site-title {
+        font-family: var(--font-display);
+        font-size: clamp(3rem, 6vw, 4.75rem);
+        font-weight: 700;
+        line-height: 0.98;
+        letter-spacing: -0.05em;
+        margin-bottom: 18px;
+      }
+
+      .site-title span {
+        background: linear-gradient(120deg, var(--ink) 40%, var(--accent) 120%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .subtitle {
+        max-width: 36ch;
+        color: var(--ink-soft);
+        font-size: clamp(1.1rem, 2vw, 1.35rem);
+        line-height: 1.55;
+        margin-bottom: 14px;
+      }
+
+      .lede {
+        max-width: 42ch;
+        color: var(--ink-faint);
+        font-size: 16px;
+        line-height: 1.6;
+        margin-bottom: 28px;
+      }
+
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 22px;
+      }
+
+      .btn-primary,
+      .btn-secondary {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 22px;
+        border-radius: 999px;
+        font-family: var(--font-display);
+        font-size: 15px;
+        font-weight: 600;
+        transition: 0.2s ease;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+        box-shadow: 0 14px 30px rgba(201, 100, 66, 0.28);
+      }
+
+      .btn-primary:hover {
+        background: var(--accent-deep);
+        transform: translateY(-2px);
+      }
+
+      .btn-secondary {
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid var(--line);
+        backdrop-filter: blur(8px);
+      }
+
+      .btn-secondary:hover {
+        background: #fff;
+        transform: translateY(-2px);
+      }
+
+      .tag-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid var(--line);
+        color: var(--ink-soft);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .tag::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      .hero-visual {
+        position: relative;
+        min-height: 440px;
+        animation: rise 0.9s ease 0.12s both;
+      }
+
+      .visual-stage {
+        position: absolute;
+        inset: 0;
+        border-radius: 32px;
+        background:
+          linear-gradient(160deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.28)),
+          radial-gradient(circle at 30% 20%, rgba(201, 100, 66, 0.16), transparent 45%);
+        border: 1px solid rgba(255, 255, 255, 0.7);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .chat-card {
+        position: absolute;
+        left: 8%;
+        right: 8%;
+        top: 12%;
+        display: grid;
+        gap: 14px;
+      }
+
+      .bubble {
+        max-width: 90%;
+        padding: 14px 16px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid var(--line);
+        box-shadow: 0 10px 24px rgba(31, 30, 29, 0.05);
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--ink-soft);
+        animation: floatIn 0.7s ease both;
+      }
+
+      .bubble strong {
+        color: var(--ink);
+      }
+
+      .bubble-user {
+        justify-self: end;
+        background: var(--ink);
+        color: rgba(255, 255, 255, 0.92);
+        border-color: transparent;
+        animation-delay: 0.2s;
+      }
+
+      .bubble-ai {
+        justify-self: start;
+        animation-delay: 0.4s;
+      }
+
+      .bubble-ai code {
+        display: block;
+        margin-top: 8px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: #f3f1ec;
+        color: var(--accent-deep);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .status-chip {
+        position: absolute;
+        left: 10%;
+        bottom: 10%;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid var(--line);
+        box-shadow: 0 12px 28px rgba(31, 30, 29, 0.06);
+        font-size: 13px;
+        font-weight: 600;
+        animation: floatIn 0.8s ease 0.6s both;
+      }
+
+      .status-chip i {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--good);
+        box-shadow: 0 0 0 4px rgba(63, 143, 107, 0.15);
+      }
+
+      section.block {
+        padding: 28px 0 72px;
+      }
+
+      .section-head {
+        max-width: 640px;
+        margin-bottom: 28px;
+      }
+
+      .section-head h2 {
+        font-family: var(--font-display);
+        font-size: clamp(1.8rem, 3vw, 2.4rem);
+        letter-spacing: -0.04em;
+        margin-bottom: 10px;
+      }
+
+      .section-head p {
+        color: var(--ink-soft);
+        font-size: 17px;
+        line-height: 1.6;
+      }
+
+      .pain-grid,
+      .feature-grid,
+      .provider-grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      .pain-grid {
+        grid-template-columns: repeat(4, 1fr);
+      }
+
+      .feature-grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .provider-grid {
+        grid-template-columns: repeat(4, 1fr);
+      }
+
+      .panel {
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        padding: 22px;
+        backdrop-filter: blur(8px);
+        box-shadow: 0 10px 30px rgba(31, 30, 29, 0.03);
+      }
+
+      .panel h3 {
+        font-family: var(--font-display);
+        font-size: 17px;
+        margin-bottom: 8px;
+        letter-spacing: -0.02em;
+      }
+
+      .panel p {
+        color: var(--ink-soft);
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      .panel-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        margin-bottom: 14px;
+        border-radius: 9px;
+        background: var(--accent-soft);
+        color: var(--accent-deep);
+        font-family: var(--font-display);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+
+      .compare {
+        overflow: hidden;
+        border-radius: 24px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.78);
+        box-shadow: var(--shadow);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 16px 20px;
+        text-align: left;
+        border-bottom: 1px solid var(--line);
+        font-size: 14px;
+      }
+
+      th {
+        background: rgba(31, 30, 29, 0.03);
+        font-family: var(--font-display);
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--ink-soft);
+      }
+
+      td:first-child {
+        font-weight: 600;
+        color: var(--ink);
+      }
+
+      td.good {
+        color: var(--accent-deep);
+        font-weight: 600;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .provider {
+        text-align: center;
+        padding: 28px 16px;
+      }
+
+      .provider .mark {
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 12px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        font-family: var(--font-display);
+        font-weight: 700;
+        color: #fff;
+      }
+
+      .provider .mark.c {
+        background: linear-gradient(145deg, #d98261, #b24f31);
+      }
+
+      .provider .mark.g {
+        background: linear-gradient(145deg, #5b8def, #3b66c4);
+      }
+
+      .provider .mark.o {
+        background: linear-gradient(145deg, #5fbb8a, #2f8f63);
+      }
+
+      .provider .mark.m {
+        background: linear-gradient(145deg, #8a8782, #5c5a57);
+      }
+
+      .provider h3 {
+        margin-bottom: 6px;
+      }
+
+      .provider .badge {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(63, 143, 107, 0.12);
+        color: var(--good);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .provider .badge.soon {
+        background: rgba(138, 135, 130, 0.14);
+        color: var(--ink-faint);
+      }
+
+      .cta-band {
+        margin: 8px 0 72px;
+        padding: 42px;
+        border-radius: 28px;
+        background:
+          radial-gradient(circle at 12% 20%, rgba(255, 255, 255, 0.18), transparent 40%),
+          linear-gradient(135deg, #c96442 0%, #a84b2f 100%);
+        color: #fff;
+        box-shadow: 0 24px 50px rgba(201, 100, 66, 0.28);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+
+      .cta-band h2 {
+        font-family: var(--font-display);
+        font-size: clamp(1.7rem, 3vw, 2.2rem);
+        letter-spacing: -0.04em;
+        margin-bottom: 8px;
+      }
+
+      .cta-band p {
+        opacity: 0.9;
+        max-width: 42ch;
+        line-height: 1.55;
+      }
+
+      .cta-band .btn-light {
+        display: inline-flex;
+        align-items: center;
+        padding: 14px 22px;
+        border-radius: 999px;
+        background: #fff;
+        color: var(--accent-deep);
+        font-family: var(--font-display);
+        font-weight: 700;
+        white-space: nowrap;
+        transition: 0.2s ease;
+      }
+
+      .cta-band .btn-light:hover {
+        transform: translateY(-2px);
+      }
+
+      .site-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 0 36px;
+        color: var(--ink-faint);
+        font-size: 13px;
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(18px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes floatIn {
+        from {
+          opacity: 0;
+          transform: translateY(12px) scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      @media (max-width: 960px) {
+        .hero,
+        .pain-grid,
+        .feature-grid,
+        .steps,
+        .provider-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .hero {
+          grid-template-columns: 1fr;
+        }
+
+        .hero-visual {
+          min-height: 360px;
+          order: -1;
+        }
+
+        .hero-copy,
+        .section-head {
+          text-align: center;
+          margin-left: auto;
+          margin-right: auto;
+        }
+
+        .subtitle,
+        .lede {
+          margin-left: auto;
+          margin-right: auto;
+        }
+
+        .cta-row,
+        .tag-row {
+          justify-content: center;
+        }
+
+        .cta-band {
+          flex-direction: column;
+          text-align: center;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .wrap {
+          width: calc(100% - 28px);
+        }
+
+        .pain-grid,
+        .feature-grid,
+        .steps,
+        .provider-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .ghost-link.docs,
+        .ghost-link.jump {
+          display: none;
+        }
+
+        .compare {
+          overflow-x: auto;
+        }
+
+        table {
+          min-width: 560px;
+        }
+
+        .site-footer {
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="atmosphere" aria-hidden="true"></div>
+
+      <header class="wrap topbar">
+        <a class="brand" href="/" target="_top">
+          <div class="brand-mark" id="brandMark">
+            <img id="siteLogo" alt="" />
+            <span id="brandInitial">S</span>
+          </div>
+          <div class="brand-name" id="navSiteName">Sub2API</div>
+        </a>
+        <div class="top-actions">
+          <a class="ghost-link jump" href="#features">能力</a>
+          <a class="ghost-link jump" href="#compare">对比</a>
+          <a class="ghost-link docs" id="docLink" href="#" target="_blank" rel="noopener" hidden>文档</a>
+          <a class="pill-btn" id="loginText" href="/login" target="_top">登录</a>
+        </div>
+      </header>
+
+      <main>
+        <section class="wrap hero">
+          <div class="hero-copy">
+            <div class="eyebrow" id="eyebrow"><span class="eyebrow-dot"></span><span id="eyebrowText">一个密钥，畅用多个 AI 模型</span></div>
+            <h1 class="site-title"><span id="siteName">Sub2API</span></h1>
+            <p class="subtitle" id="siteSubtitle">AI API Gateway Platform</p>
+            <p class="lede" id="lede">
+              无需管理多个订阅账号，一站式接入 Claude、GPT、Gemini 等主流 AI 服务。统一路由、粘性会话、按量计费。
+            </p>
+            <div class="cta-row">
+              <a class="btn-primary" id="ctaPrimary" href="/login" target="_top">
+                <span id="ctaPrimaryText">立即开始</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M5 12h14M13 5l7 7-7 7"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </a>
+              <a class="btn-secondary" id="ctaSecondary" href="/register" target="_top">免费注册</a>
+            </div>
+            <div class="tag-row" id="tagRow">
+              <span class="tag" id="tag1">订阅转 API</span>
+              <span class="tag" id="tag2">会话保持</span>
+              <span class="tag" id="tag3">按量计费</span>
+            </div>
+          </div>
+
+          <div class="hero-visual" aria-hidden="true">
+            <div class="visual-stage">
+              <div class="chat-card">
+                <div class="bubble bubble-user" id="bubbleUser">把 Claude / Codex 订阅转成 OpenAI 兼容接口</div>
+                <div class="bubble bubble-ai" id="bubbleAi">
+                  <strong>Ready.</strong> 已选好上游，并保持会话粘性。
+                  <code>POST /v1/chat/completions → 200 OK</code>
+                </div>
+              </div>
+              <div class="status-chip" id="statusChip"><i></i><span id="statusText">Upstream healthy</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="wrap block" id="pain">
+          <div class="section-head">
+            <h2 id="painTitle">你是否也遇到这些问题？</h2>
+            <p id="painDesc">多订阅、多密钥、难管控——这正是网关要解决的日常摩擦。</p>
+          </div>
+          <div class="pain-grid">
+            <article class="panel">
+              <div class="panel-num">01</div>
+              <h3>订阅费用高</h3>
+              <p>每个 AI 服务都要单独订阅，每月支出越来越多。</p>
+            </article>
+            <article class="panel">
+              <div class="panel-num">02</div>
+              <h3>多账号难管理</h3>
+              <p>不同平台的账号、密钥分散各处，管理起来很麻烦。</p>
+            </article>
+            <article class="panel">
+              <div class="panel-num">03</div>
+              <h3>服务不稳定</h3>
+              <p>单一账号容易触发限制，影响正常使用。</p>
+            </article>
+            <article class="panel">
+              <div class="panel-num">04</div>
+              <h3>用量无法控制</h3>
+              <p>不知道钱花在哪了，也无法限制团队成员的使用。</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="wrap block" id="features">
+          <div class="section-head">
+            <h2 id="featuresTitle">我们帮你解决</h2>
+            <p id="featuresDesc">简单三步，开始省心使用 AI。</p>
+          </div>
+          <div class="steps" style="margin-bottom: 16px">
+            <article class="panel">
+              <div class="panel-num">1</div>
+              <h3>注册并获取密钥</h3>
+              <p>创建一个 API Key，即可对接现有应用与工具链。</p>
+            </article>
+            <article class="panel">
+              <div class="panel-num">2</div>
+              <h3>选择模型与上游</h3>
+              <p>Claude、GPT、Gemini 等多模型统一入口，按需切换。</p>
+            </article>
+            <article class="panel">
+              <div class="panel-num">3</div>
+              <h3>按量使用与管控</h3>
+              <p>看清消费明细，设置配额上限，团队用量一目了然。</p>
+            </article>
+          </div>
+          <div class="feature-grid">
+            <article class="panel">
+              <h3>一键接入</h3>
+              <p>获取一个 API 密钥，即可调用所有已接入的 AI 模型，无需分别申请。</p>
+            </article>
+            <article class="panel">
+              <h3>稳定可靠</h3>
+              <p>智能调度多个上游账号，自动切换和负载均衡，告别频繁报错。</p>
+            </article>
+            <article class="panel">
+              <h3>用多少付多少</h3>
+              <p>按实际使用量计费，支持设置配额上限，团队用量一目了然。</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="wrap block" id="compare">
+          <div class="section-head">
+            <h2 id="compareTitle">为什么选择我们？</h2>
+            <p id="compareDesc">和官方单独订阅相比，网关更省、更稳、更好管。</p>
+          </div>
+          <div class="compare">
+            <table>
+              <thead>
+                <tr>
+                  <th>对比项</th>
+                  <th>官方订阅</th>
+                  <th>本平台</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>付费方式</td>
+                  <td>固定月费，用不完也付</td>
+                  <td class="good">按量付费，用多少付多少</td>
+                </tr>
+                <tr>
+                  <td>模型选择</td>
+                  <td>单一服务商</td>
+                  <td class="good">多模型随意切换</td>
+                </tr>
+                <tr>
+                  <td>账号管理</td>
+                  <td>每个服务单独管理</td>
+                  <td class="good">统一密钥，一站管理</td>
+                </tr>
+                <tr>
+                  <td>服务稳定性</td>
+                  <td>单账号易触发限制</td>
+                  <td class="good">多账号池，自动切换</td>
+                </tr>
+                <tr>
+                  <td>用量控制</td>
+                  <td>无法限制</td>
+                  <td class="good">可设配额、查明细</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="wrap block" id="providers">
+          <div class="section-head">
+            <h2 id="providersTitle">已支持的 AI 模型</h2>
+            <p id="providersDesc">一个 API，多种选择。</p>
+          </div>
+          <div class="provider-grid">
+            <article class="panel provider">
+              <div class="mark c">C</div>
+              <h3>Claude</h3>
+              <p>Anthropic 系列模型</p>
+              <span class="badge">已支持</span>
+            </article>
+            <article class="panel provider">
+              <div class="mark o">G</div>
+              <h3>GPT / Codex</h3>
+              <p>OpenAI 兼容接口</p>
+              <span class="badge">已支持</span>
+            </article>
+            <article class="panel provider">
+              <div class="mark g">G</div>
+              <h3>Gemini</h3>
+              <p>Google 多模态能力</p>
+              <span class="badge">已支持</span>
+            </article>
+            <article class="panel provider">
+              <div class="mark m">+</div>
+              <h3>更多</h3>
+              <p>持续接入新上游</p>
+              <span class="badge soon">即将推出</span>
+            </article>
+          </div>
+        </section>
+
+        <section class="wrap" id="cta">
+          <div class="cta-band">
+            <div>
+              <h2 id="ctaTitle">准备好开始了吗？</h2>
+              <p id="ctaDesc">注册即可获得免费试用额度，体验一站式 AI 服务。</p>
+            </div>
+            <a class="btn-light" id="ctaButton" href="/register" target="_top">免费注册</a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="wrap site-footer">
+        <span id="copyright">© 2026 Sub2API · 保留所有权利</span>
+        <span id="footerNote">Claude-inspired calm landing</span>
+      </footer>
+    </div>
+
+    <script>
+      const DEFAULTS = {
+        site_name: "Sub2API",
+        site_subtitle: "AI API Gateway Platform",
+        site_logo: "",
+        doc_url: "",
+        eyebrow: "一个密钥，畅用多个 AI 模型",
+        lede: "无需管理多个订阅账号，一站式接入 Claude、GPT、Gemini 等主流 AI 服务。统一路由、粘性会话、按量计费。",
+        cta_primary: "立即开始",
+        cta_secondary: "免费注册",
+        login_text: "登录",
+        tag1: "订阅转 API",
+        tag2: "会话保持",
+        tag3: "按量计费",
+        bubble_user: "把 Claude / Codex 订阅转成 OpenAI 兼容接口",
+        bubble_ai: "<strong>Ready.</strong> 已选好上游，并保持会话粘性。<code>POST /v1/chat/completions → 200 OK</code>",
+        status: "Upstream healthy",
+        pain_title: "你是否也遇到这些问题？",
+        pain_desc: "多订阅、多密钥、难管控——这正是网关要解决的日常摩擦。",
+        features_title: "我们帮你解决",
+        features_desc: "简单三步，开始省心使用 AI。",
+        compare_title: "为什么选择我们？",
+        compare_desc: "和官方单独订阅相比，网关更省、更稳、更好管。",
+        providers_title: "已支持的 AI 模型",
+        providers_desc: "一个 API，多种选择。",
+        cta_title: "准备好开始了吗？",
+        cta_desc: "注册即可获得免费试用额度，体验一站式 AI 服务。",
+        cta_button: "免费注册",
+        footer_note: "Claude-inspired calm landing",
+        accent: "",
+        hide: "",
+      };
+
+      const TEXT_MAP = [
+        ["siteName", "site_name"],
+        ["navSiteName", "site_name"],
+        ["siteSubtitle", "site_subtitle"],
+        ["eyebrowText", "eyebrow"],
+        ["lede", "lede"],
+        ["ctaPrimaryText", "cta_primary"],
+        ["ctaSecondary", "cta_secondary"],
+        ["loginText", "login_text"],
+        ["tag1", "tag1"],
+        ["tag2", "tag2"],
+        ["tag3", "tag3"],
+        ["bubbleUser", "bubble_user"],
+        ["statusText", "status"],
+        ["painTitle", "pain_title"],
+        ["painDesc", "pain_desc"],
+        ["featuresTitle", "features_title"],
+        ["featuresDesc", "features_desc"],
+        ["compareTitle", "compare_title"],
+        ["compareDesc", "compare_desc"],
+        ["providersTitle", "providers_title"],
+        ["providersDesc", "providers_desc"],
+        ["ctaTitle", "cta_title"],
+        ["ctaDesc", "cta_desc"],
+        ["ctaButton", "cta_button"],
+        ["footerNote", "footer_note"],
+      ];
+
+      function setText(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+      }
+
+      function setHTML(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = value;
+      }
+
+      function normalizeAccent(raw) {
+        const value = String(raw || "").trim();
+        if (/^#[0-9a-fA-F]{6}$/.test(value)) return value;
+        if (/^#[0-9a-fA-F]{3}$/.test(value)) {
+          return (
+            "#" +
+            value
+              .slice(1)
+              .split("")
+              .map((c) => c + c)
+              .join("")
+          );
+        }
+        return "";
+      }
+
+      function applyAccent(accent) {
+        const color = normalizeAccent(accent);
+        if (!color) return;
+        const root = document.documentElement;
+        root.style.setProperty("--accent", color);
+        root.style.setProperty("--accent-deep", color);
+        root.style.setProperty("--accent-soft", color + "1f");
+        root.style.setProperty("--glow", color + "2e");
+      }
+
+      function applyHide(hide) {
+        const ids = String(hide || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        ids.forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.style.display = "none";
+        });
+      }
+
+      function applyConfig(cfg) {
+        const name =
+          Object.prototype.hasOwnProperty.call(cfg, "site_name") && cfg.site_name !== ""
+            ? cfg.site_name
+            : DEFAULTS.site_name;
+
+        const pick = (key) =>
+          Object.prototype.hasOwnProperty.call(cfg, key) ? cfg[key] : DEFAULTS[key];
+
+        document.title = name;
+        document.getElementById("brandInitial").textContent = name.charAt(0).toUpperCase();
+        document.getElementById("copyright").textContent =
+          "© " + new Date().getFullYear() + " " + name + " · 保留所有权利";
+
+        TEXT_MAP.forEach(([id, key]) => {
+          setText(id, key === "site_name" ? name : pick(key));
+        });
+
+        setHTML("bubbleAi", pick("bubble_ai"));
+
+        const logo = pick("site_logo");
+        if (logo) {
+          const mark = document.getElementById("brandMark");
+          const img = document.getElementById("siteLogo");
+          img.src = logo;
+          img.alt = name;
+          mark.classList.add("has-logo");
+        }
+
+        const docUrl = pick("doc_url");
+        if (docUrl) {
+          const link = document.getElementById("docLink");
+          link.href = docUrl;
+          link.hidden = false;
+        }
+
+        ["tag1", "tag2", "tag3"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (el && !String(el.textContent || "").trim()) el.style.display = "none";
+        });
+
+        applyAccent(pick("accent"));
+        applyHide(pick("hide"));
+      }
+
+      function readParams() {
+        const params = new URLSearchParams(location.search);
+        const cfg = {};
+        Object.keys(DEFAULTS).forEach((key) => {
+          if (params.has(key)) cfg[key] = params.get(key);
+        });
+        return {
+          cfg,
+          useSettings: params.get("use_settings") !== "0",
+        };
+      }
+
+      async function boot() {
+        const { cfg, useSettings } = readParams();
+        let merged = { ...DEFAULTS, ...cfg };
+
+        if (useSettings) {
+          try {
+            const response = await fetch("/api/v1/settings/public", {
+              headers: { Accept: "application/json" },
+            });
+            if (response.ok) {
+              const payload = await response.json();
+              const data = payload && payload.data ? payload.data : {};
+              merged = {
+                ...merged,
+                site_name: cfg.site_name || data.site_name || DEFAULTS.site_name,
+                site_subtitle: cfg.site_subtitle || data.site_subtitle || DEFAULTS.site_subtitle,
+                site_logo: cfg.site_logo || data.site_logo || DEFAULTS.site_logo,
+                doc_url: cfg.doc_url || data.doc_url || DEFAULTS.doc_url,
+              };
+            }
+          } catch (_) {
+            // Keep defaults/params for local file preview.
+          }
+        }
+
+        // Explicit query params always win over settings/defaults.
+        merged = { ...merged, ...cfg };
+        applyConfig(merged);
+      }
+
+      boot();
+    </script>
+  </body>
+</html>
