@@ -95,7 +95,7 @@ const error = ref('')
 const notice = ref('')
 
 const recipients = computed(() => [...new Set(recipientsText.value.split(/[\n,;]/).map((item) => item.trim()).filter(Boolean))])
-const setupCommand = computed(() => status.value?.setup_command || `npx "@clawemail/claw-setup@latest" --auth-url "${authUrl.value.trim()}"`)
+const setupCommand = computed(() => `npx "@clawemail/claw-setup@latest" --auth-url "${authUrl.value.trim()}"`)
 const statusMessage = computed(() => status.value?.status_message || '正在读取 Claw163 状态...')
 const phaseLabel = computed(() => {
   if (!status.value?.cli_installed) return 'CLI 未安装'

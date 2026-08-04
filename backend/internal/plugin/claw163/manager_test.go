@@ -22,7 +22,7 @@ func TestNormalizeAuthURL(t *testing.T) {
 }
 
 func TestParseAuthPayload(t *testing.T) {
-	apiKey, accounts, err := parseAuthPayload("__apikey__::key\nalice:default:\nbob:imap:app-password")
+	apiKey, accounts, err := parseAuthPayload("__apikey__:workspace:key\nalice:default:\nbob:imap:app-password")
 	if err != nil {
 		t.Fatal(err)
 	}

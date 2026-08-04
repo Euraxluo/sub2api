@@ -590,7 +590,7 @@ func parseAuthPayload(body string) (string, []authAccount, error) {
 		accountID := strings.TrimSpace(line[first+1 : second])
 		credential := strings.TrimSpace(line[second+1:])
 		if name == "__apikey__" {
-			if apiKey != "" || credential == "" || accountID != "" {
+			if apiKey != "" || credential == "" {
 				return "", nil, errors.New("授权信息缺少有效 API Key")
 			}
 			apiKey = credential
