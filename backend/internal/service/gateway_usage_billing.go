@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	pluginruntime "github.com/Wei-Shaw/sub2api/internal/plugin"
 )
 
 func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
@@ -73,6 +74,7 @@ type usageLogBestEffortWriter interface {
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
 	Cost                  *CostBreakdown
+	UserChargeCost        *float64
 	User                  *User
 	APIKey                *APIKey
 	Account               *Account
@@ -80,6 +82,7 @@ type postUsageBillingParams struct {
 	RequestPayloadHash    string
 	IsSubscriptionBill    bool
 	AccountRateMultiplier float64
+	AccountStatsCost      *float64
 	APIKeyService         APIKeyQuotaUpdater
 	Platform              string // 来自 APIKey 关联 Group 的平台标识
 }
@@ -137,6 +140,12 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
 	defer cancel()
 
 	cost := p.Cost
+	if p.UserChargeCost != nil {
+		cost.ActualCost = *p.UserChargeCost
+	}
+	if p.AccountStatsCost != nil {
+		cost.TotalCost = *p.AccountStatsCost
+	}
 
 	if p.IsSubscriptionBill {
 		// Subscription usage tracked by ActualCost so group rate multiplier
@@ -264,6 +273,28 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 			cmd.SubscriptionID = usageLog.SubscriptionID
 		}
 	}
+	if p.UserChargeCost != nil {
+		charge := p.userChargeCost()
+		if p.IsSubscriptionBill && p.Subscription != nil {
+			cmd.SubscriptionID = &p.Subscription.ID
+			cmd.SubscriptionCost = charge
+		} else {
+			cmd.BalanceCost = charge
+		}
+		cmd.APIKeyQuotaCost = charge
+		cmd.APIKeyRateLimitCost = charge
+		if p.APIKeyService == nil || p.APIKey.Quota <= 0 {
+			cmd.APIKeyQuotaCost = 0
+		}
+		if p.APIKeyService == nil || !p.APIKey.HasRateLimits() {
+			cmd.APIKeyRateLimitCost = 0
+		}
+		if p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit() {
+			cmd.AccountQuotaCost = p.accountStatsBaseCost() * p.AccountRateMultiplier
+		}
+		cmd.Normalize()
+		return cmd
+	}
 
 	// Record subscription / balance cost using ActualCost so the group (and any
 	// user-specific) rate multiplier consumes subscription quota at the expected
@@ -284,6 +315,9 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	}
 	if p.shouldUpdateAccountQuota() {
 		cmd.AccountQuotaCost = p.Cost.TotalCost * p.AccountRateMultiplier
+	}
+	if p.AccountStatsCost != nil {
+		cmd.AccountQuotaCost = p.accountStatsBaseCost() * p.AccountRateMultiplier
 	}
 
 	cmd.Normalize()
@@ -698,6 +732,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 确定计费模型
 	concreteBillingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
+	pluginruntime.ApplyAccountBillingModelSource(account.Extra, &input.BillingModelSource)
 	billingModel := concreteBillingModel
 	if input.BillingModelSource == BillingModelSourceChannelMapped && input.ChannelMappedModel != "" {
 		billingModel = input.ChannelMappedModel
@@ -715,6 +750,27 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	// 通用兜底（与 OpenAI 路径的 usageBillingModelCandidates 语义对齐）：
 	// 选定模型查不到任何价格时回退到实际转发的具体模型。已定价流量不受影响。
 	billingModel = s.billableModelWithFallback(ctx, apiKey, billingModel, result.UpstreamModel, result.Model)
+	var maxDecision *maxCostBillingDecision
+	var userChargeCost *float64
+	pluginEffort := ""
+	if result.ReasoningEffort != nil {
+		pluginEffort = strings.TrimSpace(*result.ReasoningEffort)
+	}
+	if pluginruntime.EffectiveBillingModelSource(account.Extra, input.BillingModelSource) == pluginruntime.BillingModelSourceMaxCost {
+		maxDecision = resolveMaxCostBillingDecision(
+			account.ID, pluginEffort, input.ModelMappingChain,
+			[]string{input.OriginalModel, input.ChannelMappedModel, concreteBillingModel, result.UpstreamModel, result.Model, billingModel},
+			func(model string) (*CostBreakdown, error) {
+				return s.calculateRecordUsageCost(ctx, result, apiKey, model, 1, 1, opts), nil
+			},
+			func(model string) string { return resolveBillingPricingSource(ctx, s.resolver, apiKey, model) },
+		)
+		if maxDecision.SelectedCost != nil {
+			charge := pluginruntime.CalculateUserChargeCost(maxDecision.SelectedCost.TotalCost,
+				usageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier))
+			userChargeCost = &charge
+		}
+	}
 
 	// 确定 RequestedModel（渠道映射前的原始模型）
 	requestedModel := result.Model
@@ -724,6 +780,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 计算费用
 	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, opts)
+	if userChargeCost != nil && cost != nil {
+		cost.ActualCost = *userChargeCost
+	}
 
 	// 判断计费方式：订阅模式 vs 余额模式
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -736,6 +795,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	accountRateMultiplier := account.BillingRateMultiplier()
 	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost, opts)
+	if maxDecision != nil && maxDecision.SelectedCost != nil && userChargeCost != nil {
+		applySelectedBillingCostToUsageLog(usageLog, maxDecision.SelectedCost, *userChargeCost,
+			usageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier))
+	}
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
 	if apiKey.GroupID != nil {
@@ -752,6 +815,35 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 			},
 			cost.TotalCost,
 		)
+	}
+	if maxDecision != nil && apiKey.GroupID != nil {
+		statsModel := strings.TrimSpace(result.UpstreamModel)
+		if statsModel == "" {
+			statsModel = strings.TrimSpace(result.Model)
+		}
+		statsModel = pluginruntime.ResolveBillingModel(account.ID, statsModel, pluginEffort)
+		if !strings.EqualFold(strings.TrimSpace(statsModel), strings.TrimSpace(result.UpstreamModel)) {
+			previousStatsCost := usageLog.AccountStatsCost
+			applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
+				account.ID, *apiKey.GroupID, statsModel, result.Model,
+				UsageTokens{
+					InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
+					CacheCreationTokens: result.Usage.CacheCreationInputTokens,
+					CacheReadTokens:     result.Usage.CacheReadInputTokens, ImageOutputTokens: result.Usage.ImageOutputTokens,
+				}, cost.TotalCost)
+			if usageLog.AccountStatsCost == nil {
+				usageLog.AccountStatsCost = previousStatsCost
+			}
+		}
+	}
+	if usageLog.AccountStatsCost != nil && cost != nil {
+		cost.TotalCost = *usageLog.AccountStatsCost
+	}
+	if maxDecision != nil {
+		if maxDecision.SelectedModel == "" {
+			maxDecision.SelectedModel = billingModel
+		}
+		recordMaxCostBillingAudit(usageLog, account, requestedModel, pluginruntime.BillingModelSourceMaxCost, maxDecision, accountRateMultiplier, cost.TotalCost)
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -774,6 +866,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	requestID := usageLog.RequestID
 	_, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
 		Cost:                  cost,
+		UserChargeCost:        userChargeCost,
 		User:                  user,
 		APIKey:                apiKey,
 		Account:               account,
@@ -781,6 +874,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		RequestPayloadHash:    resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
 		IsSubscriptionBill:    isSubscriptionBilling,
 		AccountRateMultiplier: accountRateMultiplier,
+		AccountStatsCost:      usageLog.AccountStatsCost,
 		APIKeyService:         input.APIKeyService,
 		Platform:              quotaPlatform,
 	}, s.billingDeps(), s.usageBillingRepo)

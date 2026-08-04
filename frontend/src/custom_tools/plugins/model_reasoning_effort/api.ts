@@ -48,6 +48,7 @@ export interface ModelReasoningAutoConfig {
   timeout_seconds?: number
   iq_aggregation?: string
   iq_window_hours?: number
+  formula_mode?: 'natural_gap' | 'iq_cost'
   baseline_model?: string
   baseline_gap?: number
 }
@@ -77,9 +78,9 @@ export interface ModelReasoningAutoStatus {
 }
 
 export interface ModelReasoningAutoResponse {
-  config: ModelReasoningAutoConfig
-  status: ModelReasoningAutoStatus
-  mappings: ModelReasoningMapping[]
+  config?: Partial<ModelReasoningAutoConfig> | null
+  status?: ModelReasoningAutoStatus | null
+  mappings?: ModelReasoningMapping[] | null
 }
 
 export interface ModelReasoningUsageStat {

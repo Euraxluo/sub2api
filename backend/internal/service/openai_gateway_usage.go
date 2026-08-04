@@ -191,6 +191,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	var cost *CostBreakdown
 	var err error
+	pluginruntime.ApplyAccountBillingModelSource(account.Extra, &input.BillingModelSource)
 	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
 	if result.BillingModel != "" {
 		billingModel = strings.TrimSpace(result.BillingModel)
@@ -221,6 +222,27 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 	longContextBillingEnabled := billingAccount.IsOpenAILongContextBillingEnabled()
+	var maxDecision *maxCostBillingDecision
+	var userChargeCost *float64
+	pluginEffort := ""
+	if result.ReasoningEffort != nil {
+		pluginEffort = strings.TrimSpace(*result.ReasoningEffort)
+	}
+	if pluginruntime.EffectiveBillingModelSource(account.Extra, input.BillingModelSource) == pluginruntime.BillingModelSourceMaxCost {
+		maxDecision = resolveMaxCostBillingDecision(
+			account.ID, pluginEffort, input.ModelMappingChain, billingModels,
+			func(model string) (*CostBreakdown, error) {
+				return s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, []string{model}, 1, 1, 1, 1,
+					tokens, serviceTier, longContextBillingEnabled)
+			},
+			func(model string) string { return resolveBillingPricingSource(ctx, s.resolver, apiKey, model) },
+		)
+		if maxDecision.SelectedCost != nil {
+			charge := pluginruntime.CalculateUserChargeCost(maxDecision.SelectedCost.TotalCost,
+				openAIUsageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier, videoMultiplier, baseMultiplier))
+			userChargeCost = &charge
+		}
+	}
 	cost, err = s.calculateOpenAIRecordUsageCost(
 		ctx,
 		result,
@@ -248,6 +270,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			zap.Int64("account_id", account.ID),
 		).Warn("openai_usage.pricing_missing_record_zero_cost", zap.Error(err))
 		cost = &CostBreakdown{BillingMode: string(BillingModeToken)}
+	}
+	if userChargeCost != nil && cost != nil {
+		cost.ActualCost = *userChargeCost
 	}
 	upstreamCost := s.calculateUpstreamQuotaCost(
 		ctx,
@@ -377,6 +402,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if subscription != nil {
 		usageLog.SubscriptionID = &subscription.ID
 	}
+	if maxDecision != nil && maxDecision.SelectedCost != nil && userChargeCost != nil {
+		applySelectedBillingCostToUsageLog(usageLog, maxDecision.SelectedCost, *userChargeCost,
+			openAIUsageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier, videoMultiplier, baseMultiplier))
+	}
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
 	if apiKey.GroupID != nil {
@@ -384,6 +413,30 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			account.ID, *apiKey.GroupID, result.UpstreamModel, result.Model,
 			tokens, cost.TotalCost,
 		)
+	}
+	if maxDecision != nil && apiKey.GroupID != nil {
+		statsModel := strings.TrimSpace(result.UpstreamModel)
+		if statsModel == "" {
+			statsModel = strings.TrimSpace(result.Model)
+		}
+		statsModel = pluginruntime.ResolveBillingModel(account.ID, statsModel, pluginEffort)
+		if !strings.EqualFold(strings.TrimSpace(statsModel), strings.TrimSpace(result.UpstreamModel)) {
+			previousStatsCost := usageLog.AccountStatsCost
+			applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
+				account.ID, *apiKey.GroupID, statsModel, result.Model, tokens, cost.TotalCost)
+			if usageLog.AccountStatsCost == nil {
+				usageLog.AccountStatsCost = previousStatsCost
+			}
+		}
+	}
+	if usageLog.AccountStatsCost != nil && cost != nil {
+		cost.TotalCost = *usageLog.AccountStatsCost
+	}
+	if maxDecision != nil {
+		if maxDecision.SelectedModel == "" {
+			maxDecision.SelectedModel = billingModel
+		}
+		recordMaxCostBillingAudit(usageLog, account, requestedModel, pluginruntime.BillingModelSourceMaxCost, maxDecision, accountRateMultiplier, cost.TotalCost)
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -403,6 +456,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	billingErr := func() error {
 		_, err := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
 			Cost:                  cost,
+			UserChargeCost:        userChargeCost,
 			User:                  user,
 			APIKey:                apiKey,
 			Account:               account,
@@ -410,6 +464,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			RequestPayloadHash:    resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
 			IsSubscriptionBill:    isSubscriptionBilling,
 			AccountRateMultiplier: accountRateMultiplier,
+			AccountStatsCost:      usageLog.AccountStatsCost,
 			APIKeyService:         input.APIKeyService,
 			Platform:              quotaPlatform,
 		}, s.billingDeps(), s.usageBillingRepo)

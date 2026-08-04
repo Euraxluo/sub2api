@@ -223,6 +223,7 @@
       </section>
 
       <ModelReasoningEffortTool v-else-if="activeTab === 'reasoning'" />
+      <BillingStrategyTool v-else-if="String(activeTab) === 'billing'" />
       <LandingHomeTool v-else-if="activeTab === 'landing'" />
 
       <section v-else-if="activeTab === 'rt'" class="tools-surface">
@@ -924,6 +925,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ModelReasoningEffortTool from './plugins/model_reasoning_effort/ModelReasoningEffortTool.vue'
+import BillingStrategyTool from './plugins/billing_strategy/BillingStrategyTool.vue'
 import LandingHomeTool from './landing/LandingHomeTool.vue'
 import QRCode from 'qrcode'
 import { adminAPI } from '@/api/admin'
@@ -1035,6 +1037,7 @@ const appStore = useAppStore()
 const tabs: Array<{ id: ToolTab; label: string; icon: IconName }> = [
   { id: 'proxy', label: '代理导入', icon: 'server' },
   { id: 'reasoning', label: '模型推理强度', icon: 'brain' },
+  { id: 'billing' as ToolTab, label: '账号计费策略', icon: 'dollar' },
   { id: 'landing', label: '首页落地页', icon: 'home' },
   { id: 'rt', label: 'OpenAI RT 导入', icon: 'key' },
   { id: 'guard', label: '上游额度保护', icon: 'shield' },

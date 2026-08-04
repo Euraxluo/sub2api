@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	billing_strategy "github.com/Wei-Shaw/sub2api/internal/plugin/billing_strategy"
 	model_reasoning_effort "github.com/Wei-Shaw/sub2api/internal/plugin/model_reasoning_effort"
 	"github.com/gin-gonic/gin"
 )
@@ -24,6 +25,52 @@ func Install() {
 // Host routing code depends on this stable facade, not on a feature plugin.
 func RegisterAdminRoutes(adminGroup *gin.RouterGroup) {
 	model_reasoning_effort.RegisterAdminRoutes(adminGroup)
+	billing_strategy.RegisterAdminRoutes(adminGroup)
+}
+
+type BillingAuditCandidate = billing_strategy.Candidate
+type BillingAuditRecord = billing_strategy.AuditRecord
+type BillingStrategyDecision = billing_strategy.Decision
+type BillingStrategyInput = billing_strategy.DecisionInput
+
+const BillingModelSourceMaxCost = billing_strategy.BillingModelSourceMaxCost
+
+// ResolveMaxCostBillingDecision keeps model candidate expansion and selection
+// inside the billing-strategy plugin.
+func ResolveMaxCostBillingDecision(input BillingStrategyInput) BillingStrategyDecision {
+	return billing_strategy.ResolveMaxCostDecision(input)
+}
+
+func ResolveBillingModel(accountID int64, model, effort string) string {
+	return billing_strategy.ResolveBillingModel(accountID, model, effort)
+}
+
+func ApplyAccountBillingModelSource(extra map[string]any, source *string) {
+	billing_strategy.ApplyAccountBillingModelSource(extra, source)
+}
+
+func EffectiveBillingModelSource(extra map[string]any, channelSource string) string {
+	return billing_strategy.EffectiveBillingModelSource(extra, channelSource)
+}
+
+func BillingRate(billingMode string, tokenRate, imageRate, videoRate, searchRate float64, imageCount, videoCount, searchCalls int) float64 {
+	return billing_strategy.BillingRate(billingMode, tokenRate, imageRate, videoRate, searchRate, imageCount, videoCount, searchCalls)
+}
+
+func CalculateUserChargeCost(rawCost, rateMultiplier float64) float64 {
+	return billing_strategy.CalculateUserChargeCost(rawCost, rateMultiplier)
+}
+
+// RecordBillingAudit writes the plugin-owned explanation of a max-cost billing
+// decision. It never changes the host billing result.
+func RecordBillingAudit(record BillingAuditRecord) {
+	billing_strategy.Record(record)
+}
+
+// SelectMostExpensiveBillingCandidate keeps the strategy decision in the
+// plugin boundary while price resolution remains in the host BillingService.
+func SelectMostExpensiveBillingCandidate(candidates []BillingAuditCandidate) (int, bool) {
+	return billing_strategy.SelectMostExpensive(candidates)
 }
 
 // TransformRequest dispatches the process-wide request transformation hook.

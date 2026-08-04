@@ -26,16 +26,61 @@
             <label class="input-label mb-0">批量应用当前映射</label>
             <span class="text-xs text-gray-500 dark:text-dark-400">已选 {{ selectedReasoningBatchAccountIds.length }} 个</span>
           </div>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <button type="button" class="btn btn-secondary btn-sm" @click="selectAllReasoningBatchAccounts">全选账号</button>
-            <button type="button" class="btn btn-secondary btn-sm" @click="selectedReasoningBatchAccountIds = []">清空选择</button>
-          </div>
-          <div class="mt-2 max-h-52 space-y-1 overflow-y-auto pr-1">
-            <label v-for="account in reasoningAccounts" :key="account.id" class="flex min-w-0 items-center gap-2 rounded border border-gray-200 px-2 py-2 text-xs dark:border-dark-700">
-              <input v-model="selectedReasoningBatchAccountIds" type="checkbox" :value="account.id" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-              <span class="min-w-0 truncate">{{ account.name }} · {{ account.id }}</span>
-            </label>
-          </div>
+          <details class="account-multi-select mt-2">
+            <summary class="account-multi-trigger">
+              <span class="min-w-0 truncate">{{ reasoningAccountSelectionText(selectedReasoningBatchAccountIds, '请选择账号') }}</span>
+              <Icon name="chevronDown" size="sm" class="shrink-0 text-gray-400" />
+            </summary>
+            <div class="account-multi-menu">
+              <input
+                v-model="reasoningBatchAccountQuery"
+                class="input"
+                type="search"
+                placeholder="搜索账号名称、平台、类型或 ID"
+              />
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button type="button" class="btn btn-secondary btn-sm" :disabled="filteredReasoningAccounts(reasoningBatchAccountQuery).length === 0" @click="selectFilteredReasoningBatchAccounts">
+                  选择当前结果
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" @click="selectAllReasoningBatchAccounts">全选账号</button>
+                <button type="button" class="btn btn-secondary btn-sm" :disabled="selectedReasoningBatchAccountIds.length === 0" @click="selectedReasoningBatchAccountIds = []">清空</button>
+              </div>
+              <div v-if="selectedReasoningBatchAccountIds.length" class="mt-2 flex max-h-20 flex-wrap gap-1.5 overflow-y-auto">
+                <button
+                  v-for="accountId in selectedReasoningBatchAccountIds"
+                  :key="accountId"
+                  type="button"
+                  class="inline-flex min-w-0 items-center gap-1 rounded-full border border-primary-200 bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:border-primary-900/70 dark:bg-primary-950/40 dark:text-primary-300"
+                  :title="reasoningAccountLabel(accountId)"
+                  @click="removeReasoningBatchAccount(accountId)"
+                >
+                  <span class="max-w-[180px] truncate">{{ reasoningAccountLabel(accountId) }}</span>
+                  <Icon name="x" size="xs" />
+                </button>
+              </div>
+              <div class="mt-2 max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-dark-700 dark:bg-dark-900">
+                <label
+                  v-for="account in filteredReasoningAccounts(reasoningBatchAccountQuery)"
+                  :key="account.id"
+                  class="flex min-w-0 cursor-pointer items-center gap-3 border-b border-gray-100 px-3 py-2 text-xs last:border-b-0 hover:bg-gray-50 dark:border-dark-800 dark:hover:bg-dark-800/70"
+                >
+                  <input
+                    :checked="selectedReasoningBatchAccountIds.includes(account.id)"
+                    type="checkbox"
+                    class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    @change="toggleReasoningBatchAccount(account.id, $event)"
+                  />
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate font-medium text-gray-900 dark:text-white">{{ account.name }}</span>
+                    <span class="block truncate text-gray-500 dark:text-dark-400">{{ account.platform }} / {{ account.type }} · #{{ account.id }}</span>
+                  </span>
+                </label>
+                <div v-if="filteredReasoningAccounts(reasoningBatchAccountQuery).length === 0" class="tools-empty min-h-[96px]">
+                  没有匹配的账号。
+                </div>
+              </div>
+            </div>
+          </details>
           <button
             type="button"
             class="btn btn-secondary btn-sm mt-2 w-full"
@@ -115,6 +160,28 @@
           <option value="mean">IQ 均值</option>
         </select>
       </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <span class="text-sm font-medium text-gray-900 dark:text-white">自动公式</span>
+        <div class="inline-flex overflow-hidden rounded-lg border border-gray-200 bg-white text-xs dark:border-dark-700 dark:bg-dark-900">
+          <button
+            type="button"
+            class="px-3 py-1.5 font-medium transition-colors"
+            :class="reasoningAutoConfig.formula_mode === 'natural_gap' ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-50 dark:text-dark-300 dark:hover:bg-dark-800'"
+            @click="setReasoningFormulaMode('natural_gap')"
+          >
+            自然分段
+          </button>
+          <button
+            type="button"
+            class="border-l border-gray-200 px-3 py-1.5 font-medium transition-colors dark:border-dark-700"
+            :class="reasoningAutoConfig.formula_mode === 'iq_cost' ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-50 dark:text-dark-300 dark:hover:bg-dark-800'"
+            @click="setReasoningFormulaMode('iq_cost')"
+          >
+            费用+IQ
+          </button>
+        </div>
+        <span class="text-xs text-gray-500 dark:text-dark-400">费用与 IQ 来自 Radar，通配兜底仍指向 Luna max。</span>
+      </div>
       <div class="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
         <div class="min-w-0">
           <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -145,17 +212,92 @@
             {{ reasoningAutoConfig.account_ids?.length ? `已选择 ${reasoningAutoConfig.account_ids.length} 个账号` : '未选择时对全部 OpenAI 账号生效' }}
           </span>
         </div>
-        <div v-if="reasoningAccounts.length" class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          <label v-for="account in reasoningAccounts" :key="account.id" class="flex min-w-0 items-center gap-2 rounded border border-gray-200 px-2 py-2 text-xs dark:border-dark-700">
-            <input v-model="reasoningAutoConfig.account_ids" type="checkbox" :value="account.id" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-            <span class="min-w-0 truncate">{{ account.name }} · {{ account.id }}</span>
-          </label>
-        </div>
+        <details v-if="reasoningAccounts.length" class="account-multi-select">
+          <summary class="account-multi-trigger">
+            <span class="min-w-0 truncate">{{ reasoningAccountSelectionText(reasoningAutoConfig.account_ids || [], '全部 OpenAI 账号') }}</span>
+            <Icon name="chevronDown" size="sm" class="shrink-0 text-gray-400" />
+          </summary>
+          <div class="account-multi-menu">
+            <input
+              v-model="reasoningAutoAccountQuery"
+              class="input"
+              type="search"
+              placeholder="搜索账号名称、平台、类型或 ID"
+            />
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button type="button" class="btn btn-secondary btn-sm" :disabled="filteredReasoningAccounts(reasoningAutoAccountQuery).length === 0" @click="selectFilteredReasoningAutoAccounts">
+                选择当前结果
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" @click="selectAllReasoningAutoAccounts">全选账号</button>
+              <button type="button" class="btn btn-secondary btn-sm" :disabled="(reasoningAutoConfig.account_ids || []).length === 0" @click="clearReasoningAutoAccounts">清空</button>
+            </div>
+            <div v-if="reasoningAutoConfig.account_ids?.length" class="mt-2 flex max-h-20 flex-wrap gap-1.5 overflow-y-auto">
+              <button
+                v-for="accountId in reasoningAutoConfig.account_ids"
+                :key="accountId"
+                type="button"
+                class="inline-flex min-w-0 items-center gap-1 rounded-full border border-primary-200 bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:border-primary-900/70 dark:bg-primary-950/40 dark:text-primary-300"
+                :title="reasoningAccountLabel(accountId)"
+                @click="removeReasoningAutoAccount(accountId)"
+              >
+                <span class="max-w-[180px] truncate">{{ reasoningAccountLabel(accountId) }}</span>
+                <Icon name="x" size="xs" />
+              </button>
+            </div>
+            <div class="mt-2 max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-dark-700 dark:bg-dark-900">
+              <label
+                v-for="account in filteredReasoningAccounts(reasoningAutoAccountQuery)"
+                :key="account.id"
+                class="flex min-w-0 cursor-pointer items-center gap-3 border-b border-gray-100 px-3 py-2 text-xs last:border-b-0 hover:bg-gray-50 dark:border-dark-800 dark:hover:bg-dark-800/70"
+              >
+                <input
+                  :checked="(reasoningAutoConfig.account_ids || []).includes(account.id)"
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  @change="toggleReasoningAutoAccount(account.id, $event)"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate font-medium text-gray-900 dark:text-white">{{ account.name }}</span>
+                  <span class="block truncate text-gray-500 dark:text-dark-400">{{ account.platform }} / {{ account.type }} · #{{ account.id }}</span>
+                </span>
+              </label>
+              <div v-if="filteredReasoningAccounts(reasoningAutoAccountQuery).length === 0" class="tools-empty min-h-[96px]">
+                没有匹配的账号。
+              </div>
+            </div>
+          </div>
+        </details>
         <p v-else class="text-xs text-gray-500 dark:text-dark-400">正在加载 OpenAI 账号列表。</p>
       </div>
       <div v-if="reasoningAutoStatus.last_error" class="mt-2 text-xs text-red-600 dark:text-red-300">{{ reasoningAutoStatus.last_error }}</div>
       <div v-if="reasoningAutoStatus.plan?.baseline" class="mt-2 text-xs text-gray-500 dark:text-dark-400">
-        Luna 基准 {{ reasoningAutoStatus.plan.baseline.iq.toFixed(1) }} · 直映上限 {{ reasoningAutoStatus.plan.baseline_limit?.toFixed(1) }} · 当前自动规则 {{ reasoningAutoMappings.length }} 条
+        Luna 基准 {{ formatAutoIQ(reasoningAutoStatus.plan.baseline.iq) }} · 直映上限 {{ formatAutoIQ(reasoningAutoStatus.plan.baseline_limit) }} · 当前自动规则 {{ reasoningAutoMappings.length }} 条
+      </div>
+      <div class="mt-3 overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700">
+        <div class="border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-700 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-200">
+          当前自动规则
+        </div>
+        <div v-if="reasoningAutoMappings.length" class="overflow-x-auto">
+          <table class="min-w-[720px] divide-y divide-gray-200 text-xs dark:divide-dark-700">
+            <thead class="text-left text-gray-500 dark:text-dark-400">
+              <tr>
+                <th class="py-2 pl-3 pr-3">源模型</th>
+                <th class="py-2 pr-3">源 effort</th>
+                <th class="py-2 pr-3">目标模型</th>
+                <th class="py-2 pr-3">目标 effort</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-dark-800">
+              <tr v-for="mapping in reasoningAutoMappings" :key="`${mapping.from_model}-${mapping.from_effort || ''}-${mapping.to_model || ''}-${mapping.to_effort}`">
+                <td class="py-2 pl-3 pr-3 font-mono">{{ mapping.from_model }}</td>
+                <td class="py-2 pr-3 font-mono">{{ mapping.from_effort || 'medium' }}</td>
+                <td class="py-2 pr-3 font-mono">{{ mapping.to_model || reasoningAutoConfig.baseline_model || '-' }}</td>
+                <td class="py-2 pr-3 font-mono">{{ mapping.to_effort }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="tools-empty min-h-[96px]">暂无自动规则。</div>
       </div>
       <div v-if="reasoningStats.length" class="mt-3 overflow-x-auto">
         <table class="min-w-[720px] divide-y divide-gray-200 text-xs dark:divide-dark-700">
@@ -206,24 +348,28 @@ const appStore = useAppStore()
 const reasoningAccounts = ref<Account[]>([])
 const selectedReasoningAccountId = ref<number | null>(null)
 const selectedReasoningBatchAccountIds = ref<number[]>([])
+const reasoningBatchAccountQuery = ref('')
+const reasoningAutoAccountQuery = ref('')
 const reasoningRows = ref<ReasoningMappingRow[]>([])
 const reasoningLoading = ref(false)
 const reasoningSaving = ref(false)
 const reasoningBatchSaving = ref(false)
 const reasoningError = ref('')
-const reasoningAutoConfig = ref<ModelReasoningAutoConfig>({
+const defaultReasoningAutoConfig = (): ModelReasoningAutoConfig => ({
   enabled: false,
   radar_base_url: 'https://api.codexradar.com',
   refresh_interval_minutes: 360,
   timeout_seconds: 30,
   iq_aggregation: 'max',
   iq_window_hours: 0,
+  formula_mode: 'natural_gap',
   baseline_model: 'gpt-5.6-luna',
   baseline_gap: 5,
   account_ids: [],
   cron_schedules: [],
   schedule_timezone: 'Asia/Shanghai'
 })
+const reasoningAutoConfig = ref<ModelReasoningAutoConfig>(defaultReasoningAutoConfig())
 const reasoningAutoStatus = ref<ModelReasoningAutoStatus>({})
 const reasoningAutoMappings = ref<Array<{ from_model: string; from_effort?: string; to_model?: string; to_effort: string }>>([])
 const reasoningStats = ref<ModelReasoningUsageStat[]>([])
@@ -276,15 +422,7 @@ async function loadReasoningAuto() {
   reasoningAutoLoading.value = true
   try {
     const [auto, stats] = await Promise.all([getModelReasoningAuto(), getModelReasoningStats()])
-    reasoningAutoConfig.value = {
-      ...reasoningAutoConfig.value,
-      ...auto.config,
-      account_ids: Array.isArray(auto.config.account_ids) ? auto.config.account_ids : [],
-      cron_schedules: Array.isArray(auto.config.cron_schedules)
-        ? auto.config.cron_schedules
-        : convertRefreshTimesToCron(auto.config.refresh_times || []),
-      schedule_timezone: auto.config.schedule_timezone || 'Asia/Shanghai'
-    }
+    reasoningAutoConfig.value = normalizeReasoningAutoConfig(auto?.config)
     reasoningAutoStatus.value = auto.status || {}
     reasoningAutoMappings.value = auto.mappings || []
     reasoningStats.value = stats || []
@@ -293,6 +431,103 @@ async function loadReasoningAuto() {
   } finally {
     reasoningAutoLoading.value = false
   }
+}
+
+function normalizeReasoningAutoConfig(value: Partial<ModelReasoningAutoConfig> | null | undefined): ModelReasoningAutoConfig {
+  const config = value || {}
+  return {
+    ...defaultReasoningAutoConfig(),
+    ...config,
+    account_ids: Array.isArray(config.account_ids) ? normalizeReasoningAccountIDs(config.account_ids) : [],
+    cron_schedules: Array.isArray(config.cron_schedules)
+      ? config.cron_schedules
+      : convertRefreshTimesToCron(config.refresh_times || []),
+    schedule_timezone: config.schedule_timezone || 'Asia/Shanghai',
+    formula_mode: config.formula_mode === 'iq_cost' ? 'iq_cost' : 'natural_gap'
+  }
+}
+
+function setReasoningFormulaMode(mode: 'natural_gap' | 'iq_cost') {
+  reasoningAutoConfig.value.formula_mode = mode
+}
+
+function normalizeReasoningAccountIDs(values: number[]): number[] {
+  return [...new Set(values.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))]
+    .sort((left, right) => left - right)
+}
+
+function reasoningAccountLabel(accountId: number): string {
+  const account = reasoningAccounts.value.find((item) => item.id === accountId)
+  if (!account) return `#${accountId}`
+  return `${account.name} · ${account.platform}/${account.type} · #${account.id}`
+}
+
+function reasoningAccountSelectionText(accountIds: number[], emptyLabel: string): string {
+  const ids = normalizeReasoningAccountIDs(accountIds || [])
+  if (ids.length === 0) return emptyLabel
+  const labels = ids.slice(0, 2).map(reasoningAccountLabel)
+  const suffix = ids.length > labels.length ? ` 等 ${ids.length} 个` : ''
+  return `${labels.join('，')}${suffix}`
+}
+
+function filteredReasoningAccounts(query: string): Account[] {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return reasoningAccounts.value
+  return reasoningAccounts.value.filter((account) => (
+    account.name.toLowerCase().includes(normalized) ||
+    account.platform.toLowerCase().includes(normalized) ||
+    account.type.toLowerCase().includes(normalized) ||
+    String(account.id).includes(normalized)
+  ))
+}
+
+function toggleReasoningBatchAccount(accountId: number, event: Event) {
+  const checked = (event.target as HTMLInputElement | null)?.checked ?? false
+  selectedReasoningBatchAccountIds.value = checked
+    ? normalizeReasoningAccountIDs([...selectedReasoningBatchAccountIds.value, accountId])
+    : selectedReasoningBatchAccountIds.value.filter((id) => id !== accountId)
+}
+
+function selectFilteredReasoningBatchAccounts() {
+  selectedReasoningBatchAccountIds.value = normalizeReasoningAccountIDs([
+    ...selectedReasoningBatchAccountIds.value,
+    ...filteredReasoningAccounts(reasoningBatchAccountQuery.value).map((account) => account.id)
+  ])
+}
+
+function removeReasoningBatchAccount(accountId: number) {
+  selectedReasoningBatchAccountIds.value = selectedReasoningBatchAccountIds.value.filter((id) => id !== accountId)
+}
+
+function toggleReasoningAutoAccount(accountId: number, event: Event) {
+  const checked = (event.target as HTMLInputElement | null)?.checked ?? false
+  const current = reasoningAutoConfig.value.account_ids || []
+  reasoningAutoConfig.value.account_ids = checked
+    ? normalizeReasoningAccountIDs([...current, accountId])
+    : current.filter((id) => id !== accountId)
+}
+
+function selectFilteredReasoningAutoAccounts() {
+  reasoningAutoConfig.value.account_ids = normalizeReasoningAccountIDs([
+    ...(reasoningAutoConfig.value.account_ids || []),
+    ...filteredReasoningAccounts(reasoningAutoAccountQuery.value).map((account) => account.id)
+  ])
+}
+
+function selectAllReasoningAutoAccounts() {
+  reasoningAutoConfig.value.account_ids = normalizeReasoningAccountIDs(reasoningAccounts.value.map((account) => account.id))
+}
+
+function clearReasoningAutoAccounts() {
+  reasoningAutoConfig.value.account_ids = []
+}
+
+function removeReasoningAutoAccount(accountId: number) {
+  reasoningAutoConfig.value.account_ids = (reasoningAutoConfig.value.account_ids || []).filter((id) => id !== accountId)
+}
+
+function formatAutoIQ(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(1) : '-'
 }
 
 function convertRefreshTimesToCron(times: string[]) {
@@ -375,7 +610,7 @@ function buildCurrentReasoningConfig() {
 }
 
 function selectAllReasoningBatchAccounts() {
-  selectedReasoningBatchAccountIds.value = reasoningAccounts.value.map((account) => account.id)
+  selectedReasoningBatchAccountIds.value = normalizeReasoningAccountIDs(reasoningAccounts.value.map((account) => account.id))
 }
 
 async function applyReasoningToSelectedAccounts() {
@@ -397,3 +632,21 @@ onMounted(() => {
   void loadReasoningAuto()
 })
 </script>
+
+<style scoped>
+.account-multi-select {
+  @apply relative;
+}
+
+.account-multi-trigger {
+  @apply flex min-h-[38px] cursor-pointer list-none items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm transition-colors hover:border-gray-400 dark:border-dark-600 dark:bg-dark-800 dark:text-dark-200 dark:hover:border-dark-500;
+}
+
+.account-multi-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.account-multi-menu {
+  @apply absolute left-0 right-0 top-full z-30 mt-2 rounded-lg border border-gray-200 bg-white p-3 shadow-lg dark:border-dark-700 dark:bg-dark-900;
+}
+</style>

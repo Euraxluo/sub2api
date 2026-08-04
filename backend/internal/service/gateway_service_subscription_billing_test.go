@@ -83,3 +83,74 @@ func TestBuildUsageBillingCommand_SubscriptionAppliesRateMultiplier(t *testing.T
 		})
 	}
 }
+
+func TestBuildUsageBillingCommand_AccountQuotaUsesAccountStatsCost(t *testing.T) {
+	groupID := int64(7)
+	accountRate := 0.5
+	accountStatsCost := 3.0
+
+	p := &postUsageBillingParams{
+		Cost:                  &CostBreakdown{TotalCost: 10, ActualCost: 20},
+		User:                  &User{ID: 1},
+		APIKey:                &APIKey{ID: 2, GroupID: &groupID},
+		Account:               &Account{ID: 3, Type: AccountTypeAPIKey, Extra: map[string]any{"quota_limit": 100}},
+		AccountRateMultiplier: accountRate,
+		AccountStatsCost:      &accountStatsCost,
+	}
+
+	cmd := buildUsageBillingCommand("req-account-stats", nil, p)
+	if cmd == nil {
+		t.Fatal("buildUsageBillingCommand returned nil")
+	}
+	if diff := cmd.AccountQuotaCost - accountStatsCost*accountRate; diff < -1e-12 || diff > 1e-12 {
+		t.Errorf("AccountQuotaCost = %v, want %v", cmd.AccountQuotaCost, accountStatsCost*accountRate)
+	}
+}
+
+func TestBuildUsageBillingCommand_UsesStrategyUserChargeInsteadOfActualCost(t *testing.T) {
+	groupID := int64(7)
+	strategyCharge := 7.5
+
+	p := &postUsageBillingParams{
+		Cost:           &CostBreakdown{TotalCost: 3, ActualCost: 1},
+		UserChargeCost: &strategyCharge,
+		User:           &User{ID: 1},
+		APIKey:         &APIKey{ID: 2, GroupID: &groupID},
+		Account:        &Account{ID: 3},
+	}
+
+	cmd := buildUsageBillingCommand("req-strategy-user-charge", nil, p)
+	if cmd == nil {
+		t.Fatal("buildUsageBillingCommand returned nil")
+	}
+	if cmd.BalanceCost != strategyCharge {
+		t.Errorf("BalanceCost = %v, want %v", cmd.BalanceCost, strategyCharge)
+	}
+}
+
+func TestBuildUsageBillingCommand_StrategyChargeKeepsSubscriptionBillingType(t *testing.T) {
+	groupID := int64(7)
+	subscriptionID := int64(8)
+	strategyCharge := 2.5
+
+	p := &postUsageBillingParams{
+		Cost:               &CostBreakdown{},
+		UserChargeCost:     &strategyCharge,
+		User:               &User{ID: 1},
+		APIKey:             &APIKey{ID: 2, GroupID: &groupID},
+		Account:            &Account{ID: 3},
+		Subscription:       &UserSubscription{ID: subscriptionID},
+		IsSubscriptionBill: true,
+	}
+
+	cmd := buildUsageBillingCommand("req-strategy-subscription", nil, p)
+	if cmd == nil {
+		t.Fatal("buildUsageBillingCommand returned nil")
+	}
+	if cmd.SubscriptionCost != strategyCharge {
+		t.Errorf("SubscriptionCost = %v, want %v", cmd.SubscriptionCost, strategyCharge)
+	}
+	if cmd.BalanceCost != 0 {
+		t.Errorf("BalanceCost = %v, want 0", cmd.BalanceCost)
+	}
+}

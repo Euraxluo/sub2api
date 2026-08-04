@@ -185,6 +185,7 @@ type AutoRoutingConfig struct {
 	TimeoutSeconds         int      `json:"timeout_seconds,omitempty"`
 	IQAggregation          string   `json:"iq_aggregation,omitempty"`
 	IQWindowHours          int      `json:"iq_window_hours,omitempty"`
+	FormulaMode            string   `json:"formula_mode,omitempty"`
 	BaselineModel          string   `json:"baseline_model,omitempty"`
 	BaselineGap            float64  `json:"baseline_gap,omitempty"`
 }

@@ -141,6 +141,31 @@ func TestComputeAutomaticMappingsUsesLunaBaselineAndNaturalGap(t *testing.T) {
 	require.Equal(t, "gpt-5.6-sol@max", bySource["gpt-5.6-sol@ultra"].ToModel+"@"+bySource["gpt-5.6-sol@ultra"].ToEffort)
 }
 
+func TestComputeAutomaticMappingsIQCostFormulaUsesRadarCostAndIQ(t *testing.T) {
+	plan, err := ComputeAutomaticMappings([]ModelMetric{
+		{Model: "gpt-5.6-luna", Effort: "max", IQ: 90, HasIQ: true, HasCost: true, CostUSD: 0.50},
+		{Model: "gpt-5.6-a", Effort: "high", IQ: 97, HasIQ: true, HasCost: true, CostUSD: 1.00},
+		{Model: "gpt-5.6-b", Effort: "high", IQ: 101, HasIQ: true, HasCost: true, CostUSD: 1.03},
+		{Model: "gpt-5.6-c", Effort: "max", IQ: 140, HasIQ: true, HasCost: true, CostUSD: 10.00},
+	}, AutoMappingOptions{
+		BaselineModel: "gpt-5.6-luna",
+		BaselineGap:   5,
+		FormulaMode:   "iq_cost",
+		GPTOnly:       true,
+	})
+	require.NoError(t, err)
+
+	bySource := make(map[string]Mapping, len(plan.Mappings))
+	for _, mapping := range plan.Mappings {
+		bySource[mapping.FromModel+"@"+mapping.FromEffort] = mapping
+	}
+	require.Equal(t, "gpt-5.6-b@high", bySource["gpt-5.6-a@high"].ToModel+"@"+bySource["gpt-5.6-a@high"].ToEffort)
+	require.Equal(t, "gpt-5.6-b@high", bySource["gpt-5.6-b@high"].ToModel+"@"+bySource["gpt-5.6-b@high"].ToEffort)
+	fallback := TransformBody([]byte(`{"model":"gpt-5.4","input":[]}`), plan.Mappings)
+	require.Equal(t, "gpt-5.6-luna", gjson.GetBytes(fallback, "model").String())
+	require.Equal(t, "max", gjson.GetBytes(fallback, "reasoning.effort").String())
+}
+
 func TestAutomaticMappingsUseHighestLunaAndCoverUnobservedGPTModels(t *testing.T) {
 	plan, err := ComputeAutomaticMappings([]ModelMetric{
 		{Model: "gpt-5.6-luna", Effort: "max", IQ: 91.1, HasIQ: true, HasCost: true, CostUSD: 0.45},
@@ -236,10 +261,12 @@ func TestNormalizeAutomaticRefreshSchedule(t *testing.T) {
 	normalized := normalizeAutoRoutingConfig(AutoRoutingConfig{
 		RefreshTimes:     []string{"20.30", "07:30", "12:30", "07:30", "invalid"},
 		ScheduleTimezone: "",
+		FormulaMode:      "iq_cost",
 	})
 	require.Equal(t, []string{"30 7 * * *", "30 12 * * *", "30 20 * * *"}, normalized.CronSchedules)
 	require.Nil(t, normalized.RefreshTimes)
 	require.Equal(t, "Asia/Shanghai", normalized.ScheduleTimezone)
+	require.Equal(t, "iq_cost", normalized.FormulaMode)
 }
 
 func TestNextCronRefreshUsesDailyCronSchedules(t *testing.T) {

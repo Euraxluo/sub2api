@@ -35,6 +35,8 @@ const (
 	defaultBaselineGap        = 5.0
 	gptModelPattern           = "gpt-*"
 	defaultScheduleTimezone   = "Asia/Shanghai"
+	autoFormulaNaturalGap     = "natural_gap"
+	autoFormulaIQCost         = "iq_cost"
 )
 
 // ModelMetric is the normalized IQ/cost record used by the routing formula.
@@ -59,6 +61,7 @@ type AutoMappingOptions struct {
 	BaselineGap   float64
 	IQAggregation string
 	IQWindow      time.Duration
+	FormulaMode   string
 	GPTOnly       bool
 }
 
@@ -135,7 +138,17 @@ func normalizeAutoRoutingConfig(value AutoRoutingConfig) AutoRoutingConfig {
 	if value.BaselineGap <= 0 {
 		value.BaselineGap = defaultBaselineGap
 	}
+	value.FormulaMode = normalizeAutoFormulaMode(value.FormulaMode)
 	return value
+}
+
+func normalizeAutoFormulaMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case autoFormulaIQCost:
+		return autoFormulaIQCost
+	default:
+		return autoFormulaNaturalGap
+	}
 }
 
 func normalizeScheduleTimezone(value string) string {
@@ -399,6 +412,7 @@ func RefreshAutoMappings(ctx context.Context) error {
 		BaselineGap:   config.Auto.BaselineGap,
 		IQAggregation: config.Auto.IQAggregation,
 		IQWindow:      time.Duration(config.Auto.IQWindowHours) * time.Hour,
+		FormulaMode:   config.Auto.FormulaMode,
 		GPTOnly:       true,
 	})
 	if err != nil {
@@ -456,17 +470,32 @@ func AutoRoutingStatus() AutoRoutingSnapshot {
 }
 
 func clonePlan(plan AutoMappingPlan) AutoMappingPlan {
+	plan.Baseline.IQ = finiteFloat64(plan.Baseline.IQ, 0)
+	plan.Baseline.CostUSD = finiteFloat64(plan.Baseline.CostUSD, 0)
+	plan.BaselineLimit = finiteFloat64(plan.BaselineLimit, 0)
+	plan.MaxIQ = finiteFloat64(plan.MaxIQ, 0)
 	plan.Bands = append([]IQBand(nil), plan.Bands...)
+	for index := range plan.Bands {
+		plan.Bands[index].MinIQ = finiteFloat64(plan.Bands[index].MinIQ, 0)
+		plan.Bands[index].MaxIQ = finiteFloat64(plan.Bands[index].MaxIQ, 0)
+	}
 	plan.Mappings = append([]Mapping(nil), plan.Mappings...)
 	return plan
 }
 
-// ComputeAutomaticMappings implements the requested formula:
+func finiteFloat64(value, fallback float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return fallback
+	}
+	return value
+}
+
+// ComputeAutomaticMappings implements the configured automatic routing formula:
 //  1. Filter to GPT configurations only.
 //  2. Pick the highest-IQ Luna configuration as L.
 //  3. Map every q <= L+5 directly to L.
 //  4. Split the remaining distribution at its largest natural IQ gap.
-//  5. Map each remaining band to its lowest-cost configuration.
+//  5. Map each remaining band to a target selected by the configured formula.
 //  6. Add a GPT fallback so an unobserved model or effort also maps to L.
 func ComputeAutomaticMappings(metrics []ModelMetric, options AutoMappingOptions) (AutoMappingPlan, error) {
 	options = normalizeMappingOptions(options)
@@ -506,7 +535,7 @@ func ComputeAutomaticMappings(metrics []ModelMetric, options AutoMappingOptions)
 		MaxIQ:         maxMetricIQ(filtered),
 		Bands: []IQBand{{
 			Name:         "baseline_or_lower",
-			MinIQ:        math.Inf(-1),
+			MinIQ:        0,
 			MaxIQ:        limit,
 			TargetModel:  baseline.Model,
 			TargetEffort: baseline.Effort,
@@ -522,10 +551,10 @@ func ComputeAutomaticMappings(metrics []ModelMetric, options AutoMappingOptions)
 	if len(remaining) > 0 {
 		middle, higher, split := splitIQDistribution(remaining)
 		if len(middle) > 0 {
-			plan.Bands = append(plan.Bands, bandForMetrics("middle", middle))
+			plan.Bands = append(plan.Bands, bandForMetrics("middle", middle, options.FormulaMode))
 		}
 		if len(higher) > 0 {
-			plan.Bands = append(plan.Bands, bandForMetrics("higher", higher))
+			plan.Bands = append(plan.Bands, bandForMetrics("higher", higher, options.FormulaMode))
 		}
 		_ = split // split is represented by the two band's min/max values.
 	}
@@ -569,6 +598,7 @@ func normalizeMappingOptions(options AutoMappingOptions) AutoMappingOptions {
 	if options.IQAggregation != "max" && options.IQAggregation != "latest" && options.IQAggregation != "mean" {
 		options.IQAggregation = "max"
 	}
+	options.FormulaMode = normalizeAutoFormulaMode(options.FormulaMode)
 	return options
 }
 
@@ -707,13 +737,13 @@ func splitIQDistribution(metrics []ModelMetric) (middle, higher []ModelMetric, s
 	return middle, higher, split
 }
 
-func bandForMetrics(name string, metrics []ModelMetric) IQBand {
+func bandForMetrics(name string, metrics []ModelMetric, formulaMode string) IQBand {
 	minIQ, maxIQ := metrics[0].IQ, metrics[0].IQ
 	for _, metric := range metrics[1:] {
 		minIQ = math.Min(minIQ, metric.IQ)
 		maxIQ = math.Max(maxIQ, metric.IQ)
 	}
-	target, ok := cheapestMetric(metrics)
+	target, ok := targetMetricForFormula(metrics, formulaMode)
 	band := IQBand{Name: name, MinIQ: minIQ, MaxIQ: maxIQ}
 	if ok {
 		band.TargetModel = target.Model
@@ -732,6 +762,13 @@ func bandForMetric(bands []IQBand, iq float64) *IQBand {
 	return nil
 }
 
+func targetMetricForFormula(metrics []ModelMetric, formulaMode string) (ModelMetric, bool) {
+	if normalizeAutoFormulaMode(formulaMode) == autoFormulaIQCost {
+		return efficientMetric(metrics)
+	}
+	return cheapestMetric(metrics)
+}
+
 func cheapestMetric(metrics []ModelMetric) (ModelMetric, bool) {
 	var best ModelMetric
 	found := false
@@ -741,6 +778,29 @@ func cheapestMetric(metrics []ModelMetric) (ModelMetric, bool) {
 		}
 		if !found || metric.CostUSD < best.CostUSD || (metric.CostUSD == best.CostUSD && metricKey(metric.Model, metric.Effort) < metricKey(best.Model, best.Effort)) {
 			best = metric
+			found = true
+		}
+	}
+	return best, found
+}
+
+func efficientMetric(metrics []ModelMetric) (ModelMetric, bool) {
+	var best ModelMetric
+	bestScore := 0.0
+	found := false
+	for _, metric := range metrics {
+		if !metric.HasCost || !isFiniteNonNegative(metric.CostUSD) {
+			continue
+		}
+		cost := math.Max(metric.CostUSD, 1e-9)
+		score := metric.IQ / cost
+		if !found ||
+			score > bestScore ||
+			(score == bestScore && metric.IQ > best.IQ) ||
+			(score == bestScore && metric.IQ == best.IQ && metric.CostUSD < best.CostUSD) ||
+			(score == bestScore && metric.IQ == best.IQ && metric.CostUSD == best.CostUSD && metricKey(metric.Model, metric.Effort) < metricKey(best.Model, best.Effort)) {
+			best = metric
+			bestScore = score
 			found = true
 		}
 	}
