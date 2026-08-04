@@ -16,6 +16,7 @@ ARG GOSUMDB=sum.golang.google.cn
 ARG NPM_CONFIG_REGISTRY=
 ARG DWS_VERSION=1.0.55
 ARG WXCLAWBOT_VERSION=0.5.2
+ARG CLAW163_SETUP_VERSION=0.4.0
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -109,6 +110,10 @@ FROM ${POSTGRES_IMAGE} AS pg-client
 # -----------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE}
 
+ARG DWS_VERSION
+ARG WXCLAWBOT_VERSION
+ARG CLAW163_SETUP_VERSION
+
 # Labels
 LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
 LABEL description="Sub2API - AI API Gateway Platform"
@@ -136,7 +141,15 @@ RUN apk add --no-cache nodejs npm \
     && npm install --global --omit=dev @larksuite/cli@1.0.80 \
         dingtalk-workspace-cli@${DWS_VERSION} \
         @claw-lab/wxclawbot-cli@${WXCLAWBOT_VERSION} \
+        @clawemail/claw-setup@${CLAW163_SETUP_VERSION} \
     && npm cache clean --force
+
+COPY backend/internal/plugin/claw163/cli/package.json /opt/claw163-cli/package.json
+RUN npm install --omit=dev --ignore-scripts --prefix /opt/claw163-cli \
+    && npm cache clean --force
+COPY backend/internal/plugin/claw163/cli/index.mjs /opt/claw163-cli/index.mjs
+RUN chmod 0755 /opt/claw163-cli/index.mjs \
+    && ln -s /opt/claw163-cli/index.mjs /usr/local/bin/claw163-cli
 
 # Copy pg_dump and psql from the same postgres image used in docker-compose
 # This ensures version consistency between backup tools and the database server

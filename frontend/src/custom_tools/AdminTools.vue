@@ -703,13 +703,17 @@
 	            <h2 class="tools-title">通知通道</h2>
 	            <p class="tools-description">选择一种通知方案，完成授权、目标配置和测试发送。</p>
 	          </div>
+	          <span v-if="notificationProvider === claw163Provider" class="status-muted">Claw163 邮箱</span>
+	          <template v-else>
 	          <span :class="notificationProvider === 'feishu' ? feishuPhaseClass : notificationProvider === 'dingtalk' ? dingTalkPhaseClass : wechatPhaseClass">{{ notificationProvider === 'feishu' ? feishuPhaseLabel : notificationProvider === 'dingtalk' ? dingTalkPhaseLabel : wechatPhaseLabel }}</span>
+	          </template>
 	        </div>
 
 	        <div class="mb-4 flex flex-wrap gap-2">
 	          <button class="tools-tab" :class="notificationProvider === 'feishu' ? 'tools-tab-active' : ''" :disabled="providerLoading" @click="selectNotificationProvider('feishu')">飞书</button>
 	          <button class="tools-tab" :class="notificationProvider === 'dingtalk' ? 'tools-tab-active' : ''" :disabled="providerLoading" @click="selectNotificationProvider('dingtalk')">钉钉（dws CLI）</button>
 	          <button class="tools-tab" :class="notificationProvider === 'wechat' ? 'tools-tab-active' : ''" :disabled="providerLoading" @click="selectNotificationProvider('wechat')">微信</button>
+	          <button class="tools-tab" :class="notificationProvider === claw163Provider ? 'tools-tab-active' : ''" :disabled="providerLoading" @click="selectNotificationProvider(claw163Provider)">Claw163 邮箱</button>
 	        </div>
 
         <div v-if="notificationProvider === 'feishu'">
@@ -826,6 +830,8 @@
           </div>
         </div>
 
+	        <Claw163Tool v-else-if="notificationProvider === claw163Provider" />
+
         <div v-else>
           <div class="mb-4 grid grid-cols-1 gap-2 md:grid-cols-4">
             <div v-for="step in feishuSteps" :key="`ding-${step.key}`" class="rounded border p-3" :class="step.key === dingTalkStepKey ? 'border-primary-400 bg-primary-50 dark:bg-primary-950/30' : 'border-gray-200 dark:border-dark-700'">
@@ -926,6 +932,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ModelReasoningEffortTool from './plugins/model_reasoning_effort/ModelReasoningEffortTool.vue'
 import BillingStrategyTool from './plugins/billing_strategy/BillingStrategyTool.vue'
+import Claw163Tool from './plugins/claw163/Claw163Tool.vue'
 import LandingHomeTool from './landing/LandingHomeTool.vue'
 import QRCode from 'qrcode'
 import { adminAPI } from '@/api/admin'
@@ -1208,6 +1215,7 @@ const feishuDoctorOut = ref('')
 let feishuQRGeneration = 0
 
 type NotificationProvider = 'feishu' | 'dingtalk' | 'wechat'
+const claw163Provider = 'claw163' as NotificationProvider
 interface DingTalkItem {
   id: string
   name: string
@@ -2387,8 +2395,10 @@ async function loadNotificationProvider() {
   try {
     const { data } = await apiClient.get('/admin/notifications/providers')
     if (data.selected === 'dingtalk' || data.selected === 'feishu' || data.selected === 'wechat') notificationProvider.value = data.selected
+	if (data.selected === 'claw163') notificationProvider.value = claw163Provider
     if (notificationProvider.value === 'dingtalk') await dingTalkRefreshStatus()
     else if (notificationProvider.value === 'wechat') await wechatRefreshStatus()
+	else if (notificationProvider.value === claw163Provider) return
     else await feishuRefreshStatus()
   } catch (error) {
     feishuStatusMessage.value = errorMessage(error, '无法读取通知通道配置。')
@@ -2405,6 +2415,7 @@ async function selectNotificationProvider(provider: NotificationProvider) {
     notificationProvider.value = provider
     if (provider === 'dingtalk') await dingTalkRefreshStatus()
     else if (provider === 'wechat') await wechatRefreshStatus()
+	else if (provider === claw163Provider) return
     else await feishuRefreshStatus()
   } catch (error) {
     dingTalkConnectError.value = errorMessage(error, '切换通知方案失败。')

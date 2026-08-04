@@ -7,10 +7,12 @@
 package plugin
 
 import (
+	"context"
 	"net/http"
 	"time"
 
 	billing_strategy "github.com/Wei-Shaw/sub2api/internal/plugin/billing_strategy"
+	"github.com/Wei-Shaw/sub2api/internal/plugin/claw163"
 	model_reasoning_effort "github.com/Wei-Shaw/sub2api/internal/plugin/model_reasoning_effort"
 	"github.com/gin-gonic/gin"
 )
@@ -18,14 +20,22 @@ import (
 // Install installs all built-in plugin implementations. It is intentionally
 // idempotent so startup and tests can call it more than once.
 func Install() {
+	claw163.Install()
 	model_reasoning_effort.Install()
 }
 
 // RegisterAdminRoutes registers all built-in plugin-owned admin endpoints.
 // Host routing code depends on this stable facade, not on a feature plugin.
 func RegisterAdminRoutes(adminGroup *gin.RouterGroup) {
+	claw163.RegisterAdminRoutes(adminGroup)
 	model_reasoning_effort.RegisterAdminRoutes(adminGroup)
 	billing_strategy.RegisterAdminRoutes(adminGroup)
+}
+
+// SendClaw163Notification is the host-facing notification facade. Recipient,
+// profile, credential, and CLI details remain owned by the plugin.
+func SendClaw163Notification(ctx context.Context, subject, body string) error {
+	return claw163.Send(ctx, subject, body)
 }
 
 type BillingAuditCandidate = billing_strategy.Candidate

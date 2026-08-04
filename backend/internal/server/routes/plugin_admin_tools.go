@@ -1673,6 +1673,7 @@ const (
 	notificationProviderFeishu   notificationProvider = "feishu"
 	notificationProviderDingTalk notificationProvider = "dingtalk"
 	notificationProviderWeChat   notificationProvider = "wechat"
+	notificationProviderClaw163  notificationProvider = "claw163"
 )
 
 type notificationConfig struct {
@@ -1680,6 +1681,9 @@ type notificationConfig struct {
 }
 
 func isNotificationProvider(provider notificationProvider) bool {
+	if provider == notificationProviderClaw163 {
+		return true
+	}
 	return provider == notificationProviderFeishu || provider == notificationProviderDingTalk || provider == notificationProviderWeChat
 }
 
@@ -1737,6 +1741,7 @@ func notificationProviders(c *gin.Context) {
 			{"id": notificationProviderFeishu, "name": "飞书", "available": true},
 			{"id": notificationProviderDingTalk, "name": "钉钉（dws CLI）", "available": true},
 			{"id": notificationProviderWeChat, "name": "微信", "available": true},
+			{"id": notificationProviderClaw163, "name": "Claw163 邮箱（CLI）", "available": true},
 		},
 	})
 }
@@ -3072,9 +3077,26 @@ func umDispatchNotifications(ctx context.Context, alerts []upstreamAlert) {
 		umDispatchDingTalk(ctx, alerts)
 	case notificationProviderWeChat:
 		umDispatchWeChat(ctx, alerts)
+	case notificationProviderClaw163:
+		umDispatchClaw163(ctx, alerts)
 	default:
 		umDispatchFeishu(ctx, alerts)
 	}
+}
+
+func umDispatchClaw163(ctx context.Context, alerts []upstreamAlert) {
+	var body strings.Builder
+	for i, alert := range alerts {
+		if i > 0 {
+			body.WriteString("\n---\n")
+		}
+		body.WriteString(fmt.Sprintf("[%s] %s\n", alert.TargetName, alert.Message))
+		if alert.Detail != "" {
+			body.WriteString(alert.Detail + "\n")
+		}
+		body.WriteString(alert.TriggeredAt.Format("2006-01-02 15:04:05"))
+	}
+	_ = pluginruntime.SendClaw163Notification(ctx, "Sub2API 上游告警", body.String())
 }
 
 func umDispatchDingTalk(ctx context.Context, alerts []upstreamAlert) {
