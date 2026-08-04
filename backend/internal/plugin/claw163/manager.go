@@ -127,7 +127,7 @@ func NewManager(profileDir string) *Manager {
 	}
 	return &Manager{
 		profileDir: profileDir,
-		configPath: filepath.Join(profileDir, "claw163-cli.json"),
+		configPath: filepath.Join(profileDir, "mail-cli.json"),
 		xdgConfig:  filepath.Join(profileDir, "xdg-config"),
 		httpClient: &http.Client{Timeout: 20 * time.Second},
 		now:        time.Now,
@@ -142,7 +142,7 @@ func DefaultSetupAuthURL() string {
 }
 
 // SetupCommand is shown in Admin Tools so the Claw163 bootstrap is explicit.
-// The actual notification transport remains the plugin-owned claw163-cli.
+// Notification delivery uses the official mail-cli installed in the image.
 func SetupCommand(rawAuthURL string) string {
 	authURL := strings.TrimSpace(rawAuthURL)
 	if authURL == "" {
@@ -171,7 +171,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 	cli, err := m.resolveCLI()
 	if err != nil {
 		status.LastError = err.Error()
-		status.StatusMessage = "未安装 claw163-cli，请重建 Sub2API 镜像"
+		status.StatusMessage = "未安装 Claw163 mail-cli，请重建 Sub2API 镜像"
 		return status
 	}
 	status.CLIInstalled = true
@@ -190,7 +190,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 	defer cancel()
 	if _, err := m.runCLI(checkCtx, state.Profile, "auth", "test"); err != nil {
 		status.Phase = "error"
-		status.LastError = "claw163-cli 账号校验失败"
+		status.LastError = "Claw163 mail-cli 账号校验失败"
 		status.StatusMessage = "邮箱凭据不可用，请重新初始化"
 		return status
 	}
@@ -206,7 +206,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 }
 
 // Initialize consumes the one-time auth URL and performs all account changes
-// through claw163-cli. The URL and credentials are never written to state.
+// through the official mail-cli. The URL and credentials are never written to state.
 func (m *Manager) Initialize(ctx context.Context, rawAuthURL string, recipients []string) (Status, error) {
 	m.operationMu.Lock()
 	defer m.operationMu.Unlock()
@@ -322,7 +322,7 @@ func (m *Manager) Send(ctx context.Context, subject, body string, recipients []s
 		"--body", body,
 	)
 	if err != nil {
-		return errors.New("claw163-cli 发送邮件失败")
+		return fmt.Errorf("Claw163 mail-cli 发送邮件失败: %w", err)
 	}
 	return nil
 }
@@ -381,11 +381,14 @@ func (m *Manager) runCLI(ctx context.Context, profile string, args ...string) ([
 	} else {
 		output, err = runCommand(ctx, cli, commandArgs, env)
 	}
-	if err != nil {
-		return output, err
-	}
 	if message := cliErrorMessage(output); message != "" {
 		return output, errors.New(message)
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			return output, fmt.Errorf("%w: %s", err, detail)
+		}
+		return output, err
 	}
 	return output, nil
 }
@@ -410,7 +413,7 @@ func (m *Manager) version(ctx context.Context) string {
 
 func (m *Manager) resolveCLI() (string, error) {
 	if m.runner != nil {
-		return "claw163-cli", nil
+		return "mail-cli", nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -420,7 +423,7 @@ func (m *Manager) resolveCLI() (string, error) {
 		}
 		m.cliPath = ""
 	}
-	for _, candidate := range []string{os.Getenv("CLAW163_CLI_PATH"), "claw163-cli", "/usr/local/bin/claw163-cli", "/app/data/bin/claw163-cli"} {
+	for _, candidate := range []string{os.Getenv("CLAW163_MAIL_CLI_PATH"), os.Getenv("CLAW163_CLI_PATH"), "mail-cli", "/usr/local/bin/mail-cli", "/app/data/bin/mail-cli"} {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
 			continue
@@ -438,7 +441,7 @@ func (m *Manager) resolveCLI() (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", errors.New("claw163-cli 未安装，请重建 Sub2API 镜像")
+	return "", errors.New("Claw163 mail-cli 未安装，请重建 Sub2API 镜像")
 }
 
 func (m *Manager) ensureDirs() error {
@@ -680,5 +683,5 @@ func cliErrorMessage(output []byte) string {
 	if message := strings.TrimSpace(payload.Error.Message); message != "" {
 		return message
 	}
-	return "claw163-cli 返回失败"
+	return "Claw163 mail-cli 返回失败"
 }

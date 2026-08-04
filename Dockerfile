@@ -11,12 +11,14 @@ ARG NODE_IMAGE=node:24-alpine
 ARG GOLANG_IMAGE=golang:1.26.5-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
+ARG GLIBC_IMAGE=cgr.dev/chainguard/glibc-dynamic@sha256:57e5704e70a85b90191182eb6110d1c817df0d8e96035cb041195c5a351f0861
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 ARG NPM_CONFIG_REGISTRY=
 ARG DWS_VERSION=1.0.55
 ARG WXCLAWBOT_VERSION=0.5.2
 ARG CLAW163_SETUP_VERSION=0.4.0
+ARG CLAW163_MAIL_CLI_VERSION=0.2.4
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -106,6 +108,15 @@ RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
 FROM ${POSTGRES_IMAGE} AS pg-client
 
 # -----------------------------------------------------------------------------
+# Official Claw163 mail-cli and its glibc runtime
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS claw163-mail-cli
+ARG CLAW163_MAIL_CLI_VERSION
+RUN npm install --global --omit=dev @clawemail/mail-cli@${CLAW163_MAIL_CLI_VERSION}
+
+FROM ${GLIBC_IMAGE} AS glibc-runtime
+
+# -----------------------------------------------------------------------------
 # Stage 4: Final Runtime Image
 # -----------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE}
@@ -144,12 +155,21 @@ RUN apk add --no-cache nodejs npm \
         @clawemail/claw-setup@${CLAW163_SETUP_VERSION} \
     && npm cache clean --force
 
-COPY backend/internal/plugin/claw163/cli/package.json /opt/claw163-cli/package.json
-RUN npm install --omit=dev --ignore-scripts --prefix /opt/claw163-cli \
-    && npm cache clean --force
-COPY backend/internal/plugin/claw163/cli/index.mjs /opt/claw163-cli/index.mjs
-RUN chmod 0755 /opt/claw163-cli/index.mjs \
-    && ln -s /opt/claw163-cli/index.mjs /usr/local/bin/claw163-cli
+# mail-cli ships as a glibc-linked standalone binary. Keep Alpine as the host
+# runtime and redirect only its ELF interpreter to a pinned glibc tree.
+COPY --from=glibc-runtime /usr/lib /opt/c163/lib
+COPY --from=claw163-mail-cli /usr/local/lib/node_modules/@clawemail/mail-cli/bin/mail-cli-binary /opt/c163/mail-cli
+RUN case "$(uname -m)" in \
+        aarch64) loader="ld-linux-aarch64.so.1" ;; \
+        x86_64) loader="ld-linux-x86-64.so.2" ;; \
+        *) exit 1 ;; \
+    esac \
+    && ln -s "/opt/c163/lib/${loader}" /opt/c163/ld \
+    && node -e 'const fs=require("fs");const path="/opt/c163/mail-cli";const data=fs.readFileSync(path);const candidates=["/lib/ld-linux-aarch64.so.1","/lib64/ld-linux-x86-64.so.2"];const old=candidates.find(value=>data.indexOf(value)>=0);if(!old)throw new Error("mail-cli ELF interpreter not found");const offset=data.indexOf(old);data.fill(0,offset,offset+Buffer.byteLength(old));data.write("/opt/c163/ld",offset);fs.writeFileSync(path,data);' \
+    && chmod 0755 /opt/c163/mail-cli
+COPY backend/internal/plugin/claw163/mail-cli.sh /usr/local/bin/mail-cli
+RUN chmod 0755 /usr/local/bin/mail-cli \
+    && mail-cli --version
 
 # Copy pg_dump and psql from the same postgres image used in docker-compose
 # This ensures version consistency between backup tools and the database server

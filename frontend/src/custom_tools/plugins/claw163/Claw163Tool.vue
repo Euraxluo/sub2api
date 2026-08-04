@@ -41,7 +41,7 @@
 
         <div v-if="status?.initialized" class="rounded border border-gray-200 bg-white p-3 text-xs text-gray-600 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-300">
           <p>发件邮箱：{{ status.sender || '-' }}</p>
-          <p class="mt-1">claw163-cli：{{ status.cli_version || '已安装' }}</p>
+          <p class="mt-1">官方 mail-cli：{{ status.cli_version || '已安装' }}</p>
         </div>
       </div>
 
@@ -136,7 +136,7 @@ async function initialize() {
     applyStatus(await initializeClaw163(authUrl.value.trim(), recipients.value))
     notice.value = 'Claw163 邮箱初始化完成。'
   } catch (cause) {
-    error.value = errorMessage(cause, 'Claw163 初始化失败，请检查授权链接和 claw163-cli。')
+    error.value = errorMessage(cause, 'Claw163 初始化失败，请检查授权链接和 mail-cli。')
   } finally {
     initializing.value = false
   }
