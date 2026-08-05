@@ -129,6 +129,18 @@ type ClashProxyPreviewResponse struct {
 
 func registerPluginAdminTools(adminGroup *gin.RouterGroup) {
 	adminGroup.POST("/proxies/import/clash", previewClashImport)
+	pluginruntime.RegisterAdminJobNotifier(func(ctx context.Context, notification pluginruntime.AdminJobNotification) error {
+		severity := notification.Severity
+		if severity == "error" {
+			severity = "critical"
+		}
+		umDispatchNotifications(ctx, []upstreamAlert{{
+			TargetID: notification.TaskID, TargetName: notification.TaskName,
+			Type: "admin_job", Severity: severity,
+			Message: notification.Title, Detail: notification.Body, TriggeredAt: time.Now(),
+		}})
+		return nil
+	})
 	pluginruntime.RegisterAdminRoutes(adminGroup)
 
 	// 飞书通知通道（lark-cli 薄封装）

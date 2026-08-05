@@ -224,6 +224,7 @@
 
       <ModelReasoningEffortTool v-else-if="activeTab === 'reasoning'" />
       <BillingStrategyTool v-else-if="String(activeTab) === 'billing'" />
+      <AdminJobsTool v-else-if="activeTab === 'jobs'" />
       <LandingHomeTool v-else-if="activeTab === 'landing'" />
 
       <section v-else-if="activeTab === 'rt'" class="tools-surface">
@@ -932,6 +933,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ModelReasoningEffortTool from './plugins/model_reasoning_effort/ModelReasoningEffortTool.vue'
 import BillingStrategyTool from './plugins/billing_strategy/BillingStrategyTool.vue'
+import AdminJobsTool from './plugins/admin_jobs/AdminJobsTool.vue'
 import Claw163Tool from './plugins/claw163/Claw163Tool.vue'
 import LandingHomeTool from './landing/LandingHomeTool.vue'
 import QRCode from 'qrcode'
@@ -953,7 +955,7 @@ import {
 } from './api'
 import type { AdminDataImportResult, CreateAccountRequest, Proxy, ProxyProtocol } from '@/types'
 
-type ToolTab = 'proxy' | 'reasoning' | 'landing' | 'rt' | 'guard' | 'feishu'
+type ToolTab = 'proxy' | 'reasoning' | 'landing' | 'rt' | 'guard' | 'jobs' | 'feishu'
 type IconName = InstanceType<typeof Icon>['$props']['name']
 type FeishuPhase = 'idle' | 'starting' | 'awaiting_authorization' | 'connected' | 'ready' | 'sending' | 'success' | 'error'
 type DingTalkPhase = FeishuPhase | 'submitting_robot' | 'awaiting_robot_result' | 'robot_created'
@@ -1048,6 +1050,7 @@ const tabs: Array<{ id: ToolTab; label: string; icon: IconName }> = [
   { id: 'landing', label: '首页落地页', icon: 'home' },
   { id: 'rt', label: 'OpenAI RT 导入', icon: 'key' },
   { id: 'guard', label: '上游额度保护', icon: 'shield' },
+  { id: 'jobs', label: '任务中心', icon: 'server' },
   { id: 'feishu', label: '通知渠道', icon: 'bell' },
 ]
 
