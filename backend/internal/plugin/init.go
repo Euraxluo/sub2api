@@ -48,7 +48,20 @@ const BillingModelSourceMaxCost = billing_strategy.BillingModelSourceMaxCost
 // ResolveMaxCostBillingDecision keeps model candidate expansion and selection
 // inside the billing-strategy plugin.
 func ResolveMaxCostBillingDecision(input BillingStrategyInput) BillingStrategyDecision {
+	if input.Context != nil {
+		decision, err := billing_strategy.ResolveMaxCostDecisionWithAccountSnapshot(input.Context, input)
+		decision.AccountSnapshotError = err
+		return decision
+	}
 	return billing_strategy.ResolveMaxCostDecision(input)
+}
+
+// ResolveMaxCostBillingDecisionWithAccountSnapshot keeps account-rate lookup
+// inside the plugin. The host supplies only the request context and account ID;
+// the plugin calls the existing admin account endpoint and returns one immutable
+// decision snapshot for pricing and audit.
+func ResolveMaxCostBillingDecisionWithAccountSnapshot(ctx context.Context, input BillingStrategyInput) (BillingStrategyDecision, error) {
+	return billing_strategy.ResolveMaxCostDecisionWithAccountSnapshot(ctx, input)
 }
 
 func ResolveBillingModel(accountID int64, model, effort string) string {
@@ -69,6 +82,10 @@ func BillingRate(billingMode string, tokenRate, imageRate, videoRate, searchRate
 
 func CalculateUserChargeCost(rawCost, rateMultiplier float64) float64 {
 	return billing_strategy.CalculateUserChargeCost(rawCost, rateMultiplier)
+}
+
+func ApplyVirtualBillingCost(rawTotal, virtualTotal float64, totalCost, actualCost *float64, components ...*float64) {
+	billing_strategy.ApplyVirtualBillingCost(rawTotal, virtualTotal, totalCost, actualCost, components...)
 }
 
 // RecordBillingAudit writes the plugin-owned explanation of a max-cost billing

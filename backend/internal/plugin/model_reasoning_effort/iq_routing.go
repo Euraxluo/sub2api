@@ -35,6 +35,7 @@ const (
 	defaultBaselineGap        = 5.0
 	gptModelPattern           = "gpt-*"
 	defaultScheduleTimezone   = "Asia/Shanghai"
+	currentRadarIQAggregation = "latest"
 	autoFormulaNaturalGap     = "natural_gap"
 	autoFormulaIQCost         = "iq_cost"
 )
@@ -66,9 +67,11 @@ type AutoMappingOptions struct {
 }
 
 type IQBand struct {
-	Name         string  `json:"name"`
-	MinIQ        float64 `json:"min_iq"`
-	MaxIQ        float64 `json:"max_iq"`
+	Name  string  `json:"name"`
+	MinIQ float64 `json:"min_iq"`
+	// MaxIQ is retained for API compatibility. New threshold bands leave it at
+	// zero and match solely by MinIQ, so higher-IQ candidates remain eligible.
+	MaxIQ        float64 `json:"max_iq,omitempty"`
 	TargetModel  string  `json:"target_model,omitempty"`
 	TargetEffort string  `json:"target_effort,omitempty"`
 }
@@ -100,6 +103,8 @@ var standardCronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cro
 
 func normalizeAutoRoutingConfig(value AutoRoutingConfig) AutoRoutingConfig {
 	value.AccountIDs = normalizeAutoAccountIDs(value.AccountIDs)
+	value.UnavailableModels = normalizeUnavailableModels(append(value.UnavailableModels, value.PausedTargetModels...))
+	value.PausedTargetModels = nil
 	value.RefreshTimes = normalizeRefreshTimes(value.RefreshTimes)
 	value.CronSchedules = normalizeCronSchedules(value.CronSchedules)
 	if len(value.CronSchedules) == 0 && len(value.RefreshTimes) > 0 {
@@ -125,13 +130,10 @@ func normalizeAutoRoutingConfig(value AutoRoutingConfig) AutoRoutingConfig {
 	if value.TimeoutSeconds > maxRadarTimeoutSecond {
 		value.TimeoutSeconds = maxRadarTimeoutSecond
 	}
-	value.IQAggregation = strings.ToLower(strings.TrimSpace(value.IQAggregation))
-	if value.IQAggregation != "max" && value.IQAggregation != "latest" && value.IQAggregation != "mean" {
-		value.IQAggregation = "max"
-	}
-	if value.IQWindowHours < 0 {
-		value.IQWindowHours = 0
-	}
+	// Radar's dashboard is built from the latest: series at its newest point.
+	// Normalize legacy history aggregation settings to that same live snapshot.
+	value.IQAggregation = currentRadarIQAggregation
+	value.IQWindowHours = 0
 	if strings.TrimSpace(value.BaselineModel) == "" {
 		value.BaselineModel = defaultBaselineModel
 	}
@@ -403,16 +405,18 @@ func RefreshAutoMappings(ctx context.Context) error {
 	if !config.Auto.Enabled {
 		return errors.New("automatic IQ routing is disabled")
 	}
-	metrics, err := FetchRadarMetrics(ctx, normalizeAutoRoutingConfig(config.Auto))
+	auto := normalizeAutoRoutingConfig(config.Auto)
+	metrics, err := FetchRadarMetrics(ctx, auto)
 	if err != nil {
 		return err
 	}
+	metrics = filterUnavailableMetrics(metrics, auto.UnavailableModels)
 	plan, err := ComputeAutomaticMappings(metrics, AutoMappingOptions{
-		BaselineModel: config.Auto.BaselineModel,
-		BaselineGap:   config.Auto.BaselineGap,
-		IQAggregation: config.Auto.IQAggregation,
-		IQWindow:      time.Duration(config.Auto.IQWindowHours) * time.Hour,
-		FormulaMode:   config.Auto.FormulaMode,
+		BaselineModel: auto.BaselineModel,
+		BaselineGap:   auto.BaselineGap,
+		IQAggregation: auto.IQAggregation,
+		IQWindow:      time.Duration(auto.IQWindowHours) * time.Hour,
+		FormulaMode:   auto.FormulaMode,
 		GPTOnly:       true,
 	})
 	if err != nil {
@@ -444,14 +448,20 @@ func currentAutoMappings() []Mapping {
 // future scheduler hook. The returned slice is detached from the live state.
 func AutoMappings() []Mapping {
 	mappings := currentAutoMappings()
-	if len(mappings) > 0 {
-		return mappings
-	}
 	config, err := LoadConfig()
-	if err != nil || !config.Auto.Enabled {
+	if err != nil {
 		return nil
 	}
 	auto := normalizeAutoRoutingConfig(config.Auto)
+	if len(mappings) > 0 {
+		return filterUnavailableTargetMappings(mappings, auto.UnavailableModels)
+	}
+	if !config.Auto.Enabled {
+		return nil
+	}
+	if _, unavailable := unavailableModelSet(auto.UnavailableModels)[strings.ToLower(strings.TrimSpace(auto.BaselineModel))]; unavailable {
+		return nil
+	}
 	return automaticCoverageMappings(auto.BaselineModel, defaultBaselineEffort)
 }
 
@@ -495,7 +505,8 @@ func finiteFloat64(value, fallback float64) float64 {
 //  2. Pick the highest-IQ Luna configuration as L.
 //  3. Map every q <= L+5 directly to L.
 //  4. Split the remaining distribution at its largest natural IQ gap.
-//  5. Map each remaining band to a target selected by the configured formula.
+//  5. Treat each remaining band as a lower-bound threshold and select its
+//     target from every candidate at or above that threshold.
 //  6. Add a GPT fallback so an unobserved model or effort also maps to L.
 func ComputeAutomaticMappings(metrics []ModelMetric, options AutoMappingOptions) (AutoMappingPlan, error) {
 	options = normalizeMappingOptions(options)
@@ -520,7 +531,14 @@ func ComputeAutomaticMappings(metrics []ModelMetric, options AutoMappingOptions)
 		}
 	}
 	if len(baselineCandidates) == 0 {
-		return AutoMappingPlan{}, fmt.Errorf("no Luna IQ metric available for baseline model %q", options.BaselineModel)
+		if fallback, ok := targetMetricForFormula(filtered, options.FormulaMode); ok {
+			baselineCandidates = append(baselineCandidates, fallback)
+		} else if fallback, ok := highestIQMetric(filtered); ok {
+			baselineCandidates = append(baselineCandidates, fallback)
+		}
+	}
+	if len(baselineCandidates) == 0 {
+		return AutoMappingPlan{}, fmt.Errorf("no available IQ metric for baseline model %q", options.BaselineModel)
 	}
 	sort.Slice(baselineCandidates, func(i, j int) bool {
 		return metricBetterForBaseline(baselineCandidates[i], baselineCandidates[j])
@@ -536,7 +554,6 @@ func ComputeAutomaticMappings(metrics []ModelMetric, options AutoMappingOptions)
 		Bands: []IQBand{{
 			Name:         "baseline_or_lower",
 			MinIQ:        0,
-			MaxIQ:        limit,
 			TargetModel:  baseline.Model,
 			TargetEffort: baseline.Effort,
 		}},
@@ -551,12 +568,12 @@ func ComputeAutomaticMappings(metrics []ModelMetric, options AutoMappingOptions)
 	if len(remaining) > 0 {
 		middle, higher, split := splitIQDistribution(remaining)
 		if len(middle) > 0 {
-			plan.Bands = append(plan.Bands, bandForMetrics("middle", middle, options.FormulaMode))
+			plan.Bands = append(plan.Bands, thresholdBandForMetrics("middle", middle, remaining, options.FormulaMode))
 		}
 		if len(higher) > 0 {
-			plan.Bands = append(plan.Bands, bandForMetrics("higher", higher, options.FormulaMode))
+			plan.Bands = append(plan.Bands, thresholdBandForMetrics("higher", higher, remaining, options.FormulaMode))
 		}
-		_ = split // split is represented by the two band's min/max values.
+		_ = split // split is represented by the two bands' lower bounds.
 	}
 
 	for _, metric := range filtered {
@@ -594,10 +611,8 @@ func normalizeMappingOptions(options AutoMappingOptions) AutoMappingOptions {
 	if options.BaselineGap <= 0 {
 		options.BaselineGap = defaultBaselineGap
 	}
-	options.IQAggregation = strings.ToLower(strings.TrimSpace(options.IQAggregation))
-	if options.IQAggregation != "max" && options.IQAggregation != "latest" && options.IQAggregation != "mean" {
-		options.IQAggregation = "max"
-	}
+	options.IQAggregation = currentRadarIQAggregation
+	options.IQWindow = 0
 	options.FormulaMode = normalizeAutoFormulaMode(options.FormulaMode)
 	return options
 }
@@ -630,6 +645,22 @@ func deduplicateMetrics(metrics []ModelMetric, options AutoMappingOptions) []Mod
 		return metricKey(result[i].Model, result[i].Effort) < metricKey(result[j].Model, result[j].Effort)
 	})
 	return result
+}
+
+func filterUnavailableMetrics(metrics []ModelMetric, unavailableModels []string) []ModelMetric {
+	unavailable := unavailableModelSet(unavailableModels)
+	if len(metrics) == 0 || len(unavailable) == 0 {
+		return metrics
+	}
+	filtered := make([]ModelMetric, 0, len(metrics))
+	for _, metric := range metrics {
+		model := strings.ToLower(strings.TrimSpace(normalizeModelName(metric.Model)))
+		if _, blocked := unavailable[model]; blocked {
+			continue
+		}
+		filtered = append(filtered, metric)
+	}
+	return filtered
 }
 
 func isGPTModel(model string, gptOnly bool) bool {
@@ -737,14 +768,19 @@ func splitIQDistribution(metrics []ModelMetric) (middle, higher []ModelMetric, s
 	return middle, higher, split
 }
 
-func bandForMetrics(name string, metrics []ModelMetric, formulaMode string) IQBand {
-	minIQ, maxIQ := metrics[0].IQ, metrics[0].IQ
-	for _, metric := range metrics[1:] {
+func thresholdBandForMetrics(name string, bandMetrics, candidates []ModelMetric, formulaMode string) IQBand {
+	minIQ := bandMetrics[0].IQ
+	for _, metric := range bandMetrics[1:] {
 		minIQ = math.Min(minIQ, metric.IQ)
-		maxIQ = math.Max(maxIQ, metric.IQ)
 	}
-	target, ok := targetMetricForFormula(metrics, formulaMode)
-	band := IQBand{Name: name, MinIQ: minIQ, MaxIQ: maxIQ}
+	eligible := make([]ModelMetric, 0, len(candidates))
+	for _, metric := range candidates {
+		if metric.HasIQ && metric.IQ >= minIQ {
+			eligible = append(eligible, metric)
+		}
+	}
+	target, ok := targetMetricForFormula(eligible, formulaMode)
+	band := IQBand{Name: name, MinIQ: minIQ}
 	if ok {
 		band.TargetModel = target.Model
 		band.TargetEffort = target.Effort
@@ -753,13 +789,14 @@ func bandForMetrics(name string, metrics []ModelMetric, formulaMode string) IQBa
 }
 
 func bandForMetric(bands []IQBand, iq float64) *IQBand {
+	var selected *IQBand
 	for i := range bands {
 		band := &bands[i]
-		if iq >= band.MinIQ && iq <= band.MaxIQ {
-			return band
+		if iq >= band.MinIQ && (selected == nil || band.MinIQ > selected.MinIQ) {
+			selected = band
 		}
 	}
-	return nil
+	return selected
 }
 
 func targetMetricForFormula(metrics []ModelMetric, formulaMode string) (ModelMetric, bool) {
@@ -767,6 +804,21 @@ func targetMetricForFormula(metrics []ModelMetric, formulaMode string) (ModelMet
 		return efficientMetric(metrics)
 	}
 	return cheapestMetric(metrics)
+}
+
+func highestIQMetric(metrics []ModelMetric) (ModelMetric, bool) {
+	var best ModelMetric
+	found := false
+	for _, metric := range metrics {
+		if !metric.HasIQ {
+			continue
+		}
+		if !found || metric.IQ > best.IQ || (metric.IQ == best.IQ && metricKey(metric.Model, metric.Effort) < metricKey(best.Model, best.Effort)) {
+			best = metric
+			found = true
+		}
+	}
+	return best, found
 }
 
 func cheapestMetric(metrics []ModelMetric) (ModelMetric, bool) {
@@ -882,15 +934,29 @@ func FetchRadarMetrics(ctx context.Context, config AutoRoutingConfig) ([]ModelMe
 		return nil, err
 	}
 	client := &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second}
-	historyBody, err := fetchRadarJSON(ctx, client, base+"/api/v1/iq-history", maxIQHistoryBytes)
+	refreshToken := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	historyEndpoint := radarRefreshEndpoint(base+"/api/v1/iq-history", refreshToken)
+	tableEndpoint := radarRefreshEndpoint(base+"/api/v1/table", refreshToken)
+	historyBody, err := fetchRadarJSON(ctx, client, historyEndpoint, maxIQHistoryBytes)
 	if err != nil {
 		return nil, err
 	}
-	tableBody, err := fetchRadarJSON(ctx, client, base+"/api/v1/table", maxRadarTableBytes)
+	tableBody, err := fetchRadarJSON(ctx, client, tableEndpoint, maxRadarTableBytes)
 	if err != nil {
 		return nil, err
 	}
 	return mergeRadarMetrics(historyBody, tableBody, config), nil
+}
+
+func radarRefreshEndpoint(endpoint, token string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	query := parsed.Query()
+	query.Set("sub2api_refresh", token)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func validateRadarBaseURL(raw string) (string, error) {
@@ -907,6 +973,8 @@ func fetchRadarJSON(ctx context.Context, client *http.Client, endpoint string, l
 		return nil, err
 	}
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Cache-Control", "no-cache")
+	request.Header.Set("Pragma", "no-cache")
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
@@ -934,7 +1002,7 @@ func mergeRadarMetrics(historyBody, tableBody []byte, config AutoRoutingConfig) 
 		if model == "" || !isGPTModel(model, true) || !isFinitePositive(score.IQ) {
 			continue
 		}
-		metric := ModelMetric{Model: model, Effort: effort, IQ: score.IQ, IQSamples: score.Samples}
+		metric := ModelMetric{Model: model, Effort: effort, IQ: score.IQ, HasIQ: true, IQSamples: score.Samples}
 		if cost, ok := costs[key]; ok {
 			metric.CostUSD = cost.Cost
 			metric.HasCost = true
@@ -953,32 +1021,44 @@ type radarIQScore struct {
 	Samples int
 }
 
-func parseRadarIQHistory(data []byte, config AutoRoutingConfig) map[string]radarIQScore {
+func parseRadarIQHistory(data []byte, _ AutoRoutingConfig) map[string]radarIQScore {
 	var raw map[string][]radarIQPoint
 	if json.Unmarshal(data, &raw) != nil {
 		return nil
 	}
 	result := make(map[string]radarIQScore)
+	sourcePriority := make(map[string]int)
 	for rawKey, points := range raw {
-		key := strings.TrimPrefix(strings.TrimSpace(rawKey), "latest:")
+		normalizedKey := strings.TrimSpace(rawKey)
+		isLatestSeries := strings.HasPrefix(normalizedKey, "latest:")
+		key := strings.TrimPrefix(normalizedKey, "latest:")
+		hasExplicitEffort := strings.Contains(key, "@")
 		model, effort := splitRadarModelKey(key)
 		if model == "" || !isGPTModel(model, true) {
 			continue
 		}
-		score, ok := aggregateIQPoints(points, config)
+		score, ok := aggregateIQPoints(points)
 		if !ok {
 			continue
 		}
 		canonicalKey := metricKey(model, effort)
-		// The non-latest history key is preferred when both forms are present.
-		if _, exists := result[canonicalKey]; !exists || !strings.HasPrefix(rawKey, "latest:") {
-			result[canonicalKey] = score
+		priority := 0
+		if isLatestSeries {
+			priority += 2
 		}
+		if hasExplicitEffort {
+			priority++
+		}
+		if previous, exists := sourcePriority[canonicalKey]; exists && previous >= priority {
+			continue
+		}
+		result[canonicalKey] = score
+		sourcePriority[canonicalKey] = priority
 	}
 	return result
 }
 
-func aggregateIQPoints(points []radarIQPoint, config AutoRoutingConfig) (radarIQScore, bool) {
+func aggregateIQPoints(points []radarIQPoint) (radarIQScore, bool) {
 	type validPoint struct {
 		score float64
 		at    time.Time
@@ -998,47 +1078,13 @@ func aggregateIQPoints(points []radarIQPoint, config AutoRoutingConfig) (radarIQ
 	if len(valid) == 0 {
 		return radarIQScore{}, false
 	}
-	if config.IQWindowHours > 0 {
-		latest := valid[0].at
-		for _, point := range valid[1:] {
-			if point.at.After(latest) {
-				latest = point.at
-			}
-		}
-		cutoff := latest.Add(-time.Duration(config.IQWindowHours) * time.Hour)
-		filtered := valid[:0]
-		for _, point := range valid {
-			if point.at.IsZero() || !point.at.Before(cutoff) {
-				filtered = append(filtered, point)
-			}
-		}
-		if len(filtered) > 0 {
-			valid = filtered
+	latest := valid[0]
+	for _, point := range valid[1:] {
+		if point.at.After(latest.at) || point.at.Equal(latest.at) {
+			latest = point
 		}
 	}
-	score := valid[0].score
-	switch config.IQAggregation {
-	case "latest":
-		for _, point := range valid[1:] {
-			if point.at.After(valid[0].at) {
-				valid[0] = point
-			}
-		}
-		score = valid[0].score
-	case "mean":
-		sum := 0.0
-		for _, point := range valid {
-			sum += point.score
-		}
-		score = sum / float64(len(valid))
-	default:
-		for _, point := range valid[1:] {
-			if point.score > score {
-				score = point.score
-			}
-		}
-	}
-	return radarIQScore{IQ: score, Samples: len(valid)}, true
+	return radarIQScore{IQ: latest.score, Samples: len(valid)}, true
 }
 
 type radarCost struct {

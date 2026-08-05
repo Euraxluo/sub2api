@@ -236,7 +236,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 					tokens, serviceTier, longContextBillingEnabled)
 			},
 			func(model string) string { return resolveBillingPricingSource(ctx, s.resolver, apiKey, model) },
+			ctx,
 		)
+		if maxDecision.AccountSnapshotError != nil {
+			return fmt.Errorf("resolve max-cost billing account snapshot: %w", maxDecision.AccountSnapshotError)
+		}
 		if maxDecision.SelectedCost != nil {
 			charge := pluginruntime.CalculateUserChargeCost(maxDecision.SelectedCost.TotalCost,
 				openAIUsageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier, videoMultiplier, baseMultiplier))
@@ -293,6 +297,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Create usage log
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
+	if maxDecision != nil && maxDecision.AccountSnapshotResolved {
+		accountRateMultiplier = maxDecision.AccountRateMultiplier
+	}
 	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
 	if result.OpenAIWSMode {
 		if upstreamRequestID := strings.TrimSpace(result.RequestID); upstreamRequestID != "" {
@@ -428,6 +435,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 				usageLog.AccountStatsCost = previousStatsCost
 			}
 		}
+	}
+	if maxDecision != nil && maxDecision.RawCost != nil && maxDecision.AccountSnapshotResolved {
+		accountStatsCost := maxDecision.RawCost.TotalCost
+		usageLog.AccountStatsCost = &accountStatsCost
 	}
 	if usageLog.AccountStatsCost != nil && cost != nil {
 		cost.TotalCost = *usageLog.AccountStatsCost

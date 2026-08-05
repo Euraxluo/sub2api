@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,20 +175,24 @@ type AccountConfig struct {
 // the same JSON file as manual mappings so the host application needs no new
 // configuration plumbing.
 type AutoRoutingConfig struct {
-	Enabled       bool     `json:"enabled"`
-	AccountIDs    []int64  `json:"account_ids,omitempty"`
-	CronSchedules []string `json:"cron_schedules,omitempty"`
+	Enabled            bool     `json:"enabled"`
+	AccountIDs         []int64  `json:"account_ids,omitempty"`
+	UnavailableModels  []string `json:"unavailable_models,omitempty"`
+	PausedTargetModels []string `json:"paused_target_models,omitempty"`
+	CronSchedules      []string `json:"cron_schedules,omitempty"`
 	// RefreshTimes is retained as a migration input for the previous UI.
 	RefreshTimes           []string `json:"refresh_times,omitempty"`
 	ScheduleTimezone       string   `json:"schedule_timezone,omitempty"`
 	RadarBaseURL           string   `json:"radar_base_url,omitempty"`
 	RefreshIntervalMinutes int      `json:"refresh_interval_minutes,omitempty"`
 	TimeoutSeconds         int      `json:"timeout_seconds,omitempty"`
-	IQAggregation          string   `json:"iq_aggregation,omitempty"`
-	IQWindowHours          int      `json:"iq_window_hours,omitempty"`
-	FormulaMode            string   `json:"formula_mode,omitempty"`
-	BaselineModel          string   `json:"baseline_model,omitempty"`
-	BaselineGap            float64  `json:"baseline_gap,omitempty"`
+	// IQAggregation and IQWindowHours are retained for config compatibility;
+	// normalization always uses the newest point from Radar's latest: series.
+	IQAggregation string  `json:"iq_aggregation,omitempty"`
+	IQWindowHours int     `json:"iq_window_hours,omitempty"`
+	FormulaMode   string  `json:"formula_mode,omitempty"`
+	BaselineModel string  `json:"baseline_model,omitempty"`
+	BaselineGap   float64 `json:"baseline_gap,omitempty"`
 }
 
 type Config struct {
@@ -575,7 +580,7 @@ func accountMappings(config Config, accountID int64) []Mapping {
 		// manual rule over an auto-generated wildcard or tie.
 		mappings = append(mappings, account.Mappings...)
 	}
-	return mappings
+	return filterUnavailableTargetMappings(mappings, auto.UnavailableModels)
 }
 
 func autoRoutingAppliesToAccount(config AutoRoutingConfig, accountID int64) bool {
@@ -591,6 +596,64 @@ func autoRoutingAppliesToAccount(config AutoRoutingConfig, accountID int64) bool
 		}
 	}
 	return false
+}
+
+func normalizePausedTargetModels(models []string) []string {
+	return normalizeUnavailableModels(models)
+}
+
+func normalizeUnavailableModels(models []string) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(models))
+	result := make([]string, 0, len(models))
+	for _, model := range models {
+		normalized := strings.ToLower(strings.TrimSpace(model))
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	sort.Strings(result)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func unavailableModelSet(models []string) map[string]struct{} {
+	models = normalizeUnavailableModels(models)
+	if len(models) == 0 {
+		return nil
+	}
+	result := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		result[model] = struct{}{}
+	}
+	return result
+}
+
+func filterUnavailableTargetMappings(mappings []Mapping, unavailableModels []string) []Mapping {
+	unavailable := unavailableModelSet(unavailableModels)
+	if len(mappings) == 0 || len(unavailable) == 0 {
+		return mappings
+	}
+	filtered := make([]Mapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		targetModel := strings.ToLower(strings.TrimSpace(mappingTargetModel(mapping)))
+		if targetModel != "" {
+			if _, blocked := unavailable[targetModel]; blocked {
+				continue
+			}
+		}
+		filtered = append(filtered, mapping)
+	}
+	return filtered
 }
 
 func normalize(raw string) string {
@@ -622,6 +685,8 @@ func cloneConfig(value Config) Config {
 		Auto:     value.Auto,
 	}
 	clone.Auto.AccountIDs = append([]int64(nil), value.Auto.AccountIDs...)
+	clone.Auto.UnavailableModels = append([]string(nil), value.Auto.UnavailableModels...)
+	clone.Auto.PausedTargetModels = append([]string(nil), value.Auto.PausedTargetModels...)
 	clone.Auto.CronSchedules = append([]string(nil), value.Auto.CronSchedules...)
 	clone.Auto.RefreshTimes = append([]string(nil), value.Auto.RefreshTimes...)
 	for accountID, account := range value.Accounts {

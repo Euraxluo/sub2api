@@ -47,3 +47,32 @@ func TestUpdateConfigBatchRejectsInvalidAccountIDsBeforeLoadingConfig(t *testing
 
 	require.Equal(t, http.StatusBadRequest, response.Code)
 }
+
+func TestClearAllConfigsRemovesManualMappingsOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("SUB2API_MODEL_REASONING_EFFORT_CONFIG", t.TempDir()+"/config.json")
+	require.NoError(t, SaveConfig(Config{
+		Accounts: map[string]AccountConfig{
+			"2": {Mappings: []Mapping{{FromModel: "gpt-5.6-sol", FromEffort: "max", ToModel: "gpt-5.6-luna", ToEffort: "max"}}},
+			"3": {Mappings: []Mapping{{FromModel: "gpt-5.6-terra", FromEffort: "ultra", ToModel: "gpt-5.6-sol", ToEffort: "xhigh"}}},
+		},
+		Auto: AutoRoutingConfig{
+			Enabled:           true,
+			UnavailableModels: []string{"gpt-5.6-luna"},
+		},
+	}))
+
+	router := gin.New()
+	group := router.Group("/admin")
+	RegisterAdminRoutes(group)
+	req := httptest.NewRequest(http.MethodDelete, "/admin/model-reasoning-effort/config", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	config, err := LoadConfig()
+	require.NoError(t, err)
+	require.Empty(t, config.Accounts)
+	require.True(t, config.Auto.Enabled)
+	require.Equal(t, []string{"gpt-5.6-luna"}, config.Auto.UnavailableModels)
+}

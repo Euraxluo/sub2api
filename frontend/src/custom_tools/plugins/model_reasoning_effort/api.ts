@@ -26,6 +26,10 @@ export interface ModelReasoningBatchConfigResponse {
   config: ModelReasoningAccountConfig
 }
 
+export interface ModelReasoningClearConfigsResponse {
+  cleared_accounts: number
+}
+
 export async function updateModelReasoningConfigBatch(
   accountIDs: number[],
   config: ModelReasoningAccountConfig
@@ -37,9 +41,16 @@ export async function updateModelReasoningConfigBatch(
   return data
 }
 
+export async function clearModelReasoningConfigs(): Promise<ModelReasoningClearConfigsResponse> {
+  const { data } = await apiClient.delete<ModelReasoningClearConfigsResponse>('/admin/model-reasoning-effort/config')
+  return data
+}
+
 export interface ModelReasoningAutoConfig {
   enabled: boolean
   account_ids: number[]
+  unavailable_models: string[]
+  paused_target_models?: string[]
   cron_schedules: string[]
   refresh_times?: string[]
   schedule_timezone: string
@@ -69,7 +80,7 @@ export interface ModelReasoningAutoStatus {
     baseline?: ModelReasoningMetric
     baseline_limit?: number
     max_iq?: number
-    bands?: Array<{ name: string; min_iq: number; max_iq: number; target_model?: string; target_effort?: string }>
+    bands?: Array<{ name: string; min_iq: number; max_iq?: number; target_model?: string; target_effort?: string }>
     mappings?: ModelReasoningMapping[]
   }
   metrics?: ModelReasoningMetric[]

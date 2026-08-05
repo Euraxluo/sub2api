@@ -13,6 +13,7 @@ export interface BillingAuditCandidate {
   cache_write_cost: number
   cache_read_cost: number
   total_cost: number
+  account_billed_cost?: number
 }
 
 export interface BillingAuditRecord {
@@ -30,6 +31,8 @@ export interface BillingAuditRecord {
   image_output_tokens: number
   image_count: number
   group_rate_multiplier: number
+  account_base_rate_multiplier?: number
+  account_rate_multiplier_factor?: number
   account_rate_multiplier: number
   total_cost: number
   actual_cost: number
@@ -37,6 +40,23 @@ export interface BillingAuditRecord {
   account_billed_cost: number
   candidates: BillingAuditCandidate[]
   created_at: string
+}
+
+export interface BillingStrategyConfig {
+  account_multipliers: Record<string, number>
+}
+
+export async function getBillingStrategyConfig(): Promise<BillingStrategyConfig> {
+  const { data } = await apiClient.get<BillingStrategyConfig>('/admin/billing-strategy/config')
+  return data || { account_multipliers: {} }
+}
+
+export async function updateAccountMultipliers(accountIDs: number[], multiplier: number): Promise<BillingStrategyConfig> {
+  const { data } = await apiClient.put<BillingStrategyConfig>('/admin/billing-strategy/account-multipliers', {
+    account_ids: accountIDs,
+    multiplier
+  })
+  return data || { account_multipliers: {} }
 }
 
 export async function getBillingAudits(accountID?: number, limit = 100): Promise<BillingAuditRecord[]> {

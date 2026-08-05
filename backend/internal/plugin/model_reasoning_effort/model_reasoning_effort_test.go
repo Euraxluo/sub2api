@@ -2,8 +2,11 @@ package model_reasoning_effort
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -90,6 +93,89 @@ func TestMergeRadarMetricsKeepsGPTOnlyAndReadsTaskCosts(t *testing.T) {
 	}
 	require.InDelta(t, 0.4666, byKey["gpt-5.6-luna@max"].CostUSD, 0.001)
 	require.Equal(t, 3.0, byKey["gpt-5.6-sol@xhigh"].CostUSD)
+}
+
+func TestRadarLatestSeriesNewestPointDrivesAutomaticMappings(t *testing.T) {
+	history := []byte(`{
+		"gpt-5.6-luna@max":[{"ts":"2026-08-05T01:00:00Z","score":96.0}],
+		"latest:gpt-5.6-luna":[{"ts":"2026-08-05T01:00:00Z","score":61.3}],
+		"latest:gpt-5.6-luna@medium":[{"ts":"2026-08-05T01:00:00Z","score":38.8}],
+		"latest:gpt-5.6-luna@max":[
+			{"ts":"2026-08-05T01:00:00Z","score":97.8},
+			{"ts":"2026-08-03T21:00:00Z","score":105.8}
+		],
+		"latest:gpt-5.6-sol@ultra":[{"ts":"2026-08-05T01:00:00Z","score":100.4}],
+		"latest:gpt-5.6-sol@max":[{"ts":"2026-08-05T01:00:00Z","score":103.1}],
+		"latest:gpt-5.6-sol@xhigh":[{"ts":"2026-08-05T01:00:00Z","score":107.1}],
+		"latest:gpt-5.6-terra@ultra":[{"ts":"2026-08-05T01:00:00Z","score":105.8}]
+	}`)
+	table := []byte(`{"cells":{
+		"task|gpt-5.6-luna|max":{"cost":0.46,"total_n":1},
+		"task|gpt-5.6-sol|ultra":{"cost":22.50,"total_n":1},
+		"task|gpt-5.6-sol|max":{"cost":9.33,"total_n":1},
+		"task|gpt-5.6-sol|xhigh":{"cost":6.38,"total_n":1},
+		"task|gpt-5.6-terra|ultra":{"cost":9.87,"total_n":1}
+	}}`)
+	metrics := mergeRadarMetrics(history, table, AutoRoutingConfig{
+		IQAggregation: "max",
+		IQWindowHours: 168,
+	})
+	byMetric := make(map[string]ModelMetric, len(metrics))
+	for _, metric := range metrics {
+		byMetric[metric.Model+"@"+metric.Effort] = metric
+	}
+	require.InDelta(t, 97.8, byMetric["gpt-5.6-luna@max"].IQ, 0.001)
+	require.InDelta(t, 38.8, byMetric["gpt-5.6-luna@medium"].IQ, 0.001)
+	require.True(t, byMetric["gpt-5.6-luna@max"].HasIQ)
+
+	plan, err := ComputeAutomaticMappings(metrics, AutoMappingOptions{
+		BaselineModel: "gpt-5.6-luna",
+		BaselineGap:   5,
+		FormulaMode:   "natural_gap",
+		GPTOnly:       true,
+	})
+	require.NoError(t, err)
+	require.InDelta(t, 97.8, plan.Baseline.IQ, 0.001)
+	require.InDelta(t, 102.8, plan.BaselineLimit, 0.001)
+	require.InDelta(t, 107.1, plan.MaxIQ, 0.001)
+
+	bySource := make(map[string]Mapping, len(plan.Mappings))
+	for _, mapping := range plan.Mappings {
+		bySource[mapping.FromModel+"@"+mapping.FromEffort] = mapping
+	}
+	require.Equal(t, "gpt-5.6-luna@max", bySource["gpt-5.6-sol@ultra"].ToModel+"@"+bySource["gpt-5.6-sol@ultra"].ToEffort)
+	require.Equal(t, "gpt-5.6-sol@xhigh", bySource["gpt-5.6-sol@max"].ToModel+"@"+bySource["gpt-5.6-sol@max"].ToEffort)
+	require.Equal(t, "gpt-5.6-sol@xhigh", bySource["gpt-5.6-terra@ultra"].ToModel+"@"+bySource["gpt-5.6-terra@ultra"].ToEffort)
+	require.InDelta(t, 103.1, plan.Bands[1].MinIQ, 0.001)
+	require.Zero(t, plan.Bands[0].MaxIQ)
+	require.Zero(t, plan.Bands[1].MaxIQ)
+	require.InDelta(t, 105.8, plan.Bands[2].MinIQ, 0.001)
+	require.Zero(t, plan.Bands[2].MaxIQ)
+}
+
+func TestRadarRefreshEndpointPreservesQueryAndAddsCacheBuster(t *testing.T) {
+	endpoint := radarRefreshEndpoint("https://api.codexradar.com/api/v1/iq-history?existing=1", "snapshot-42")
+	parsed, err := url.Parse(endpoint)
+	require.NoError(t, err)
+	require.Equal(t, "1", parsed.Query().Get("existing"))
+	require.Equal(t, "snapshot-42", parsed.Query().Get("sub2api_refresh"))
+}
+
+func TestFetchRadarJSONRequestsFreshSnapshot(t *testing.T) {
+	var cacheControl string
+	var pragma string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		cacheControl = request.Header.Get("Cache-Control")
+		pragma = request.Header.Get("Pragma")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	body, err := fetchRadarJSON(context.Background(), server.Client(), server.URL, 1024)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"ok":true}`, string(body))
+	require.Equal(t, "no-cache", cacheControl)
+	require.Equal(t, "no-cache", pragma)
 }
 
 func TestMappingStatsSeparateSourceEfforts(t *testing.T) {
@@ -244,17 +330,70 @@ func TestAutomaticMappingCanBeScopedToSelectedAccounts(t *testing.T) {
 	require.Equal(t, "low", gjson.GetBytes(unselectedBody, "reasoning.effort").String())
 }
 
-func TestNormalizeConfigPreservesAndNormalizesAutomaticAccountScope(t *testing.T) {
+func TestUnavailableModelsSkipAutoAndManualMappings(t *testing.T) {
+	previous := autoSnapshot.Load()
+	autoSnapshot.Store(nil)
+	t.Cleanup(func() { autoSnapshot.Store(previous) })
+
+	config := Config{
+		Auto: AutoRoutingConfig{
+			Enabled:           true,
+			BaselineModel:     "gpt-5.6-luna",
+			UnavailableModels: []string{"GPT-5.6-LUNA"},
+		},
+		Accounts: map[string]AccountConfig{
+			"42": {Mappings: []Mapping{
+				{FromModel: "gpt-5.6-sol", FromEffort: "max", ToModel: "gpt-5.6-luna", ToEffort: "max"},
+				{FromModel: "gpt-5.6-sol", FromEffort: "xhigh", ToModel: "gpt-5.5", ToEffort: "xhigh"},
+			}},
+		},
+	}
+
+	maxBody := TransformBody([]byte(`{"model":"gpt-5.6-sol","reasoning_effort":"max","messages":[]}`), accountMappings(config, 42))
+	require.Equal(t, "gpt-5.6-sol", gjson.GetBytes(maxBody, "model").String())
+
+	xhighBody := TransformBody([]byte(`{"model":"gpt-5.6-sol","reasoning_effort":"xhigh","messages":[]}`), accountMappings(config, 42))
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(xhighBody, "model").String())
+	require.Equal(t, "xhigh", gjson.GetBytes(xhighBody, "reasoning_effort").String())
+}
+
+func TestUnavailableModelsAreExcludedBeforeAutomaticMapping(t *testing.T) {
+	metrics := []ModelMetric{
+		{Model: "gpt-5.6-luna", Effort: "max", IQ: 98, CostUSD: 0.4, HasIQ: true, HasCost: true},
+		{Model: "gpt-5.6-terra", Effort: "ultra", IQ: 104, CostUSD: 9, HasIQ: true, HasCost: true},
+		{Model: "gpt-5.6-sol", Effort: "xhigh", IQ: 107, CostUSD: 6, HasIQ: true, HasCost: true},
+	}
+	available := filterUnavailableMetrics(metrics, []string{"GPT-5.6-LUNA"})
+	plan, err := ComputeAutomaticMappings(available, AutoMappingOptions{
+		BaselineModel: "gpt-5.6-luna",
+		BaselineGap:   5,
+		FormulaMode:   "natural_gap",
+		GPTOnly:       true,
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, "gpt-5.6-luna", plan.Baseline.Model)
+	for _, mapping := range plan.Mappings {
+		require.NotEqual(t, "gpt-5.6-luna", mapping.ToModel)
+	}
+}
+
+func TestNormalizeConfigMigratesAndNormalizesAutomaticAccountScope(t *testing.T) {
 	normalized, err := NormalizeConfig(Config{
 		Auto: AutoRoutingConfig{
-			Enabled:    true,
-			AccountIDs: []int64{43, 42, 43, 0, -1},
+			Enabled:            true,
+			AccountIDs:         []int64{43, 42, 43, 0, -1},
+			UnavailableModels:  []string{"gpt-5.6-sol", "GPT-5.6-SOL"},
+			PausedTargetModels: []string{" GPT-5.6-LUNA ", "gpt-5.6-luna", ""},
 		},
 	})
 	require.NoError(t, err)
 	require.Equal(t, []int64{42, 43}, normalized.Auto.AccountIDs)
+	require.Equal(t, []string{"gpt-5.6-luna", "gpt-5.6-sol"}, normalized.Auto.UnavailableModels)
+	require.Nil(t, normalized.Auto.PausedTargetModels)
 	require.True(t, cloneConfig(normalized).Auto.Enabled)
 	require.Equal(t, []int64{42, 43}, cloneConfig(normalized).Auto.AccountIDs)
+	require.Equal(t, []string{"gpt-5.6-luna", "gpt-5.6-sol"}, cloneConfig(normalized).Auto.UnavailableModels)
+	require.Nil(t, cloneConfig(normalized).Auto.PausedTargetModels)
 }
 
 func TestNormalizeAutomaticRefreshSchedule(t *testing.T) {
@@ -262,11 +401,15 @@ func TestNormalizeAutomaticRefreshSchedule(t *testing.T) {
 		RefreshTimes:     []string{"20.30", "07:30", "12:30", "07:30", "invalid"},
 		ScheduleTimezone: "",
 		FormulaMode:      "iq_cost",
+		IQAggregation:    "max",
+		IQWindowHours:    168,
 	})
 	require.Equal(t, []string{"30 7 * * *", "30 12 * * *", "30 20 * * *"}, normalized.CronSchedules)
 	require.Nil(t, normalized.RefreshTimes)
 	require.Equal(t, "Asia/Shanghai", normalized.ScheduleTimezone)
 	require.Equal(t, "iq_cost", normalized.FormulaMode)
+	require.Equal(t, "latest", normalized.IQAggregation)
+	require.Zero(t, normalized.IQWindowHours)
 }
 
 func TestNextCronRefreshUsesDailyCronSchedules(t *testing.T) {

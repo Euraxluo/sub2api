@@ -10,6 +10,7 @@ import (
 type maxCostBillingDecision struct {
 	pluginruntime.BillingStrategyDecision
 	SelectedCost *CostBreakdown
+	RawCost      *CostBreakdown
 }
 
 // resolveMaxCostBillingDecision adapts the service cost type to the plugin's
@@ -20,9 +21,15 @@ func resolveMaxCostBillingDecision(
 	candidates []string,
 	evaluate func(string) (*CostBreakdown, error),
 	pricingSource func(string) string,
+	decisionContexts ...context.Context,
 ) *maxCostBillingDecision {
 	costs := make(map[string]*CostBreakdown, len(candidates))
+	var decisionContext context.Context
+	if len(decisionContexts) > 0 {
+		decisionContext = decisionContexts[0]
+	}
 	decision := pluginruntime.ResolveMaxCostBillingDecision(pluginruntime.BillingStrategyInput{
+		Context:       decisionContext,
 		AccountID:     accountID,
 		Effort:        effort,
 		MappingChain:  mappingChain,
@@ -37,9 +44,21 @@ func resolveMaxCostBillingDecision(
 			return billingAuditCandidateFromCost(model, cost), err
 		},
 	})
+	selectedCostKey := strings.ToLower(strings.TrimSpace(decision.SelectedModel))
+	rawSelectedCost := costs[selectedCostKey]
+	if decision.AccountSnapshotResolved && rawSelectedCost != nil {
+		virtualSelectedCost := *rawSelectedCost
+		pluginruntime.ApplyVirtualBillingCost(rawSelectedCost.TotalCost, decision.VirtualModelCost,
+			&virtualSelectedCost.TotalCost, &virtualSelectedCost.ActualCost,
+			&virtualSelectedCost.InputCost, &virtualSelectedCost.ImageInputCost,
+			&virtualSelectedCost.OutputCost, &virtualSelectedCost.ImageOutputCost,
+			&virtualSelectedCost.CacheCreationCost, &virtualSelectedCost.CacheReadCost)
+		costs[selectedCostKey] = &virtualSelectedCost
+	}
 	return &maxCostBillingDecision{
 		BillingStrategyDecision: decision,
 		SelectedCost:            costs[strings.ToLower(strings.TrimSpace(decision.SelectedModel))],
+		RawCost:                 rawSelectedCost,
 	}
 }
 

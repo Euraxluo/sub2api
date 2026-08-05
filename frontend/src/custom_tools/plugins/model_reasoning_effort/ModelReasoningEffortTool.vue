@@ -90,6 +90,15 @@
             <Icon name="copy" size="sm" />
             {{ reasoningBatchSaving ? '应用中...' : '应用到选中账号' }}
           </button>
+          <button
+            type="button"
+            class="btn btn-danger btn-sm mt-2 w-full"
+            :disabled="reasoningClearSaving"
+            @click="clearAllReasoningAccountMappings"
+          >
+            <Icon name="trash" size="sm" />
+            {{ reasoningClearSaving ? '清空中...' : '清空所有账号映射' }}
+          </button>
           <p class="input-hint">会覆盖所选账号的手工映射；自动 IQ 映射的账号范围仍单独配置。</p>
         </div>
       </div>
@@ -135,7 +144,7 @@
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">自动 IQ 映射</h3>
-          <p class="text-xs text-gray-500 dark:text-dark-400">只读取 GPT 系列 Radar IQ；自动规则保存在插件配置和内存快照中。</p>
+          <p class="text-xs text-gray-500 dark:text-dark-400">只读取 GPT 系列 Radar 最新 IQ 采样；自动规则保存在插件配置和内存快照中。</p>
         </div>
         <div class="flex gap-2">
           <button type="button" class="btn btn-secondary btn-sm" :disabled="reasoningAutoLoading" @click="refreshReasoningAuto">
@@ -154,12 +163,23 @@
         <input v-model="reasoningAutoConfig.baseline_model" class="input" placeholder="基准模型" />
         <input v-model.number="reasoningAutoConfig.baseline_gap" class="input" type="number" min="0" step="0.1" placeholder="基准 IQ +" />
         <input v-model.number="reasoningAutoConfig.refresh_interval_minutes" class="input" type="number" min="5" placeholder="无固定时刻时的刷新分钟" aria-label="无固定时刻时的刷新分钟" />
-        <select v-model="reasoningAutoConfig.iq_aggregation" class="input">
-          <option value="max">IQ 最高值</option>
-          <option value="latest">最新 IQ</option>
-          <option value="mean">IQ 均值</option>
-        </select>
+        <input class="input" type="text" value="Radar 最新 IQ" aria-label="IQ 数据口径" readonly />
       </div>
+      <div class="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+        <label class="block">
+          <span class="input-label">不可用模型</span>
+          <input
+            v-model="unavailableModelsText"
+            class="input font-mono"
+            placeholder="例如 gpt-5.6-luna；多个用逗号、空格或换行分隔"
+          />
+        </label>
+        <button type="button" class="btn btn-secondary self-end" @click="markBaselineUnavailable">
+          <Icon name="ban" size="sm" />
+          标记基准不可用
+        </button>
+      </div>
+      <p class="input-hint mt-1">自动刷新会按这些模型不存在重新计算；手工映射里指向不可用模型的规则也会被跳过，删除后恢复。</p>
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <span class="text-sm font-medium text-gray-900 dark:text-white">自动公式</span>
         <div class="inline-flex overflow-hidden rounded-lg border border-gray-200 bg-white text-xs dark:border-dark-700 dark:bg-dark-900">
@@ -323,6 +343,7 @@ import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
 import {
+  clearModelReasoningConfigs,
   getModelReasoningAuto,
   getModelReasoningConfig,
   getModelReasoningStats,
@@ -354,22 +375,25 @@ const reasoningRows = ref<ReasoningMappingRow[]>([])
 const reasoningLoading = ref(false)
 const reasoningSaving = ref(false)
 const reasoningBatchSaving = ref(false)
+const reasoningClearSaving = ref(false)
 const reasoningError = ref('')
 const defaultReasoningAutoConfig = (): ModelReasoningAutoConfig => ({
   enabled: false,
   radar_base_url: 'https://api.codexradar.com',
   refresh_interval_minutes: 360,
   timeout_seconds: 30,
-  iq_aggregation: 'max',
+  iq_aggregation: 'latest',
   iq_window_hours: 0,
   formula_mode: 'natural_gap',
   baseline_model: 'gpt-5.6-luna',
   baseline_gap: 5,
+  unavailable_models: [],
   account_ids: [],
   cron_schedules: [],
   schedule_timezone: 'Asia/Shanghai'
 })
 const reasoningAutoConfig = ref<ModelReasoningAutoConfig>(defaultReasoningAutoConfig())
+const unavailableModelsText = ref('')
 const reasoningAutoStatus = ref<ModelReasoningAutoStatus>({})
 const reasoningAutoMappings = ref<Array<{ from_model: string; from_effort?: string; to_model?: string; to_effort: string }>>([])
 const reasoningStats = ref<ModelReasoningUsageStat[]>([])
@@ -423,6 +447,7 @@ async function loadReasoningAuto() {
   try {
     const [auto, stats] = await Promise.all([getModelReasoningAuto(), getModelReasoningStats()])
     reasoningAutoConfig.value = normalizeReasoningAutoConfig(auto?.config)
+    syncUnavailableModelsText()
     reasoningAutoStatus.value = auto.status || {}
     reasoningAutoMappings.value = auto.mappings || []
     reasoningStats.value = stats || []
@@ -439,11 +464,17 @@ function normalizeReasoningAutoConfig(value: Partial<ModelReasoningAutoConfig> |
     ...defaultReasoningAutoConfig(),
     ...config,
     account_ids: Array.isArray(config.account_ids) ? normalizeReasoningAccountIDs(config.account_ids) : [],
+    unavailable_models: normalizeUnavailableModels([
+      ...(Array.isArray(config.unavailable_models) ? config.unavailable_models : []),
+      ...(Array.isArray(config.paused_target_models) ? config.paused_target_models : [])
+    ]),
     cron_schedules: Array.isArray(config.cron_schedules)
       ? config.cron_schedules
       : convertRefreshTimesToCron(config.refresh_times || []),
     schedule_timezone: config.schedule_timezone || 'Asia/Shanghai',
-    formula_mode: config.formula_mode === 'iq_cost' ? 'iq_cost' : 'natural_gap'
+    formula_mode: config.formula_mode === 'iq_cost' ? 'iq_cost' : 'natural_gap',
+    iq_aggregation: 'latest',
+    iq_window_hours: 0
   }
 }
 
@@ -454,6 +485,32 @@ function setReasoningFormulaMode(mode: 'natural_gap' | 'iq_cost') {
 function normalizeReasoningAccountIDs(values: number[]): number[] {
   return [...new Set(values.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))]
     .sort((left, right) => left - right)
+}
+
+function normalizeUnavailableModels(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))].sort()
+}
+
+function parseUnavailableModels(value: string): string[] {
+  return normalizeUnavailableModels(value.split(/[\s,，;；]+/))
+}
+
+function formatUnavailableModels(values: string[]): string {
+  return normalizeUnavailableModels(values || []).join(', ')
+}
+
+function syncUnavailableModelsText() {
+  unavailableModelsText.value = formatUnavailableModels(reasoningAutoConfig.value.unavailable_models || [])
+}
+
+function markBaselineUnavailable() {
+  const baseline = reasoningAutoConfig.value.baseline_model?.trim()
+  if (!baseline) return
+  reasoningAutoConfig.value.unavailable_models = normalizeUnavailableModels([
+    ...(reasoningAutoConfig.value.unavailable_models || []),
+    baseline
+  ])
+  syncUnavailableModelsText()
 }
 
 function reasoningAccountLabel(accountId: number): string {
@@ -552,6 +609,7 @@ async function saveReasoningAuto() {
   reasoningAutoSaving.value = true
   reasoningError.value = ''
   try {
+    reasoningAutoConfig.value.unavailable_models = parseUnavailableModels(unavailableModelsText.value)
     await updateModelReasoningAuto(reasoningAutoConfig.value)
     await loadReasoningAuto()
     appStore.showSuccess('自动 IQ 映射配置已保存。')
@@ -578,6 +636,8 @@ async function refreshReasoningAuto() {
 watch(selectedReasoningAccountId, (accountID) => {
   if (accountID != null) void loadReasoningAccount(accountID)
 })
+
+watch(() => reasoningAutoConfig.value.unavailable_models, syncUnavailableModelsText)
 
 async function saveReasoningAccount() {
   const accountID = selectedReasoningAccountId.value
@@ -624,6 +684,23 @@ async function applyReasoningToSelectedAccounts() {
     reasoningError.value = errorMessage(error, '批量应用模型映射失败。')
   } finally {
     reasoningBatchSaving.value = false
+  }
+}
+
+async function clearAllReasoningAccountMappings() {
+  if (!window.confirm('确认清空所有 OpenAI 账号的手工模型映射吗？自动 IQ 配置不会被删除。')) return
+  reasoningClearSaving.value = true
+  reasoningError.value = ''
+  try {
+    const result = await clearModelReasoningConfigs()
+    reasoningRows.value = []
+    selectedReasoningBatchAccountIds.value = []
+    if (selectedReasoningAccountId.value != null) await loadReasoningAccount(selectedReasoningAccountId.value)
+    appStore.showSuccess(`已清空 ${result.cleared_accounts} 个账号的手工映射。`)
+  } catch (error) {
+    reasoningError.value = errorMessage(error, '清空所有账号映射失败。')
+  } finally {
+    reasoningClearSaving.value = false
   }
 }
 

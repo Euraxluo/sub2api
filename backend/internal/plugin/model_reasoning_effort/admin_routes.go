@@ -15,6 +15,7 @@ import (
 func RegisterAdminRoutes(adminGroup *gin.RouterGroup) {
 	registerQuotaGuardRoutes(adminGroup)
 	adminGroup.PUT("/model-reasoning-effort/config/batch", updateConfigBatch)
+	adminGroup.DELETE("/model-reasoning-effort/config", clearAllConfigs)
 	adminGroup.GET("/model-reasoning-effort/config/:account_id", getConfig)
 	adminGroup.PUT("/model-reasoning-effort/config/:account_id", updateConfig)
 	adminGroup.GET("/model-reasoning-effort/auto", getAuto)
@@ -33,6 +34,10 @@ type batchConfigRequest struct {
 type batchConfigResponse struct {
 	UpdatedAccountIDs []int64       `json:"updated_account_ids"`
 	Config            AccountConfig `json:"config"`
+}
+
+type clearAllConfigsResponse struct {
+	ClearedAccounts int `json:"cleared_accounts"`
 }
 
 func updateConfigBatch(c *gin.Context) {
@@ -66,6 +71,21 @@ func updateConfigBatch(c *gin.Context) {
 		UpdatedAccountIDs: accountIDs,
 		Config:            config.Accounts[strconv.FormatInt(accountIDs[0], 10)],
 	})
+}
+
+func clearAllConfigs(c *gin.Context) {
+	config, err := LoadConfig()
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to load model reasoning plugin config")
+		return
+	}
+	cleared := len(config.Accounts)
+	config.Accounts = map[string]AccountConfig{}
+	if err := SaveConfig(config); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, clearAllConfigsResponse{ClearedAccounts: cleared})
 }
 
 func normalizeBatchAccountIDs(values []int64) ([]int64, error) {

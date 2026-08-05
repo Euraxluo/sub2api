@@ -1,6 +1,7 @@
 package billing_strategy
 
 import (
+	"context"
 	"strings"
 
 	model_reasoning_effort "github.com/Wei-Shaw/sub2api/internal/plugin/model_reasoning_effort"
@@ -19,6 +20,7 @@ const (
 // DecisionInput is the host-independent input to the max-cost strategy.
 // Evaluate returns the raw, unmultiplied cost fields for one model.
 type DecisionInput struct {
+	Context       context.Context
 	AccountID     int64
 	Effort        string
 	MappingChain  string
@@ -31,14 +33,20 @@ type DecisionInput struct {
 // Decision contains the plugin's model-selection result and its audit data.
 // The host resolves the selected model back to its own cost type.
 type Decision struct {
-	MappingChain  string
-	SelectedModel string
-	Candidates    []Candidate
+	MappingChain                string
+	SelectedModel               string
+	VirtualModelCost            float64
+	AccountBaseRateMultiplier   float64
+	AccountRateMultiplierFactor float64
+	AccountRateMultiplier       float64
+	AccountSnapshotResolved     bool
+	AccountSnapshotError        error `json:"-"`
+	Candidates                  []Candidate
 }
 
 // ResolveMaxCostDecision expands the request's model chain with plugin mapping
 // results, evaluates each unique model, and selects the greatest raw cost.
-// Group/account multipliers are intentionally outside this decision.
+// It is kept pure for strategy tests and callers that only need selection.
 func ResolveMaxCostDecision(input DecisionInput) Decision {
 	raw := NormalizeModels(input.Models...)
 	mappingChain := strings.TrimSpace(input.MappingChain)
@@ -89,6 +97,46 @@ func ResolveMaxCostDecision(input DecisionInput) Decision {
 	decision := Decision{MappingChain: mappingChain, Candidates: candidates}
 	if ok {
 		decision.SelectedModel = candidates[selected].Model
+	}
+	return decision
+}
+
+// ResolveMaxCostDecisionWithAccountSnapshot resolves the winning raw model,
+// fetches the account rate through the existing admin HTTP API exactly once,
+// and builds the plugin-owned virtual model price from that immutable snapshot.
+func ResolveMaxCostDecisionWithAccountSnapshot(ctx context.Context, input DecisionInput) (Decision, error) {
+	decision := ResolveMaxCostDecision(input)
+	if decision.SelectedModel == "" {
+		return decision, nil
+	}
+	snapshot, err := fetchAccountSnapshot(ctx, input.AccountID)
+	if err != nil {
+		return decision, err
+	}
+	factor, err := configuredAccountRateMultiplierFactor(snapshot.AccountID)
+	if err != nil {
+		return decision, err
+	}
+	return applyAccountSnapshotWithFactor(decision, snapshot, factor), nil
+}
+
+func applyAccountSnapshot(decision Decision, snapshot AccountSnapshot) Decision {
+	return applyAccountSnapshotWithFactor(decision, snapshot, AccountRateMultiplierFactor(snapshot.AccountID))
+}
+
+func applyAccountSnapshotWithFactor(decision Decision, snapshot AccountSnapshot, factor float64) Decision {
+	multiplier := resolveAccountMultiplierWithFactor(snapshot.RateMultiplier, factor)
+	decision.AccountBaseRateMultiplier = multiplier.base
+	decision.AccountRateMultiplierFactor = multiplier.factor
+	decision.AccountRateMultiplier = multiplier.effective
+	decision.AccountSnapshotResolved = true
+	decision.Candidates = cloneCandidates(decision.Candidates)
+	for index := range decision.Candidates {
+		cost := validCost(decision.Candidates[index].TotalCost) * multiplier.effective
+		decision.Candidates[index].AccountBilledCost = float64Pointer(cost)
+		if strings.EqualFold(decision.Candidates[index].Model, decision.SelectedModel) {
+			decision.VirtualModelCost = cost
+		}
 	}
 	return decision
 }

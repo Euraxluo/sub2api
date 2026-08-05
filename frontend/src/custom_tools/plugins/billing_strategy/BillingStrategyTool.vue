@@ -28,6 +28,24 @@
         </div>
 
         <div>
+          <label class="input-label">账号倍率乘数</label>
+          <input
+            v-model.number="selectedAccountMultiplier"
+            class="input"
+            type="number"
+            min="0.0001"
+            max="10000"
+            step="0.01"
+          />
+          <p v-if="selectedMultiplierAccount" class="input-hint font-mono">
+            {{ formatMultiplier(selectedMultiplierAccount.rate_multiplier) }} ×
+            {{ formatMultiplier(selectedAccountMultiplier) }} =
+            {{ formatMultiplier(effectiveAccountMultiplier(selectedMultiplierAccount, selectedAccountMultiplier)) }}
+          </p>
+          <p v-else class="input-hint">应用到当前选中的账号；默认乘数为 1.00x。</p>
+        </div>
+
+        <div>
           <div class="mb-1.5 flex items-center justify-between gap-2">
             <label class="input-label mb-0">目标账号</label>
             <span class="text-xs text-gray-500 dark:text-dark-400">{{ selectedAccountIds.length }} 个</span>
@@ -84,9 +102,18 @@
             @click="applyBillingStrategy"
           >
             <Icon name="check" size="sm" />
-            {{ accountsSaving ? '保存中...' : '应用到选中账号' }}
+            {{ accountsSaving ? '保存中...' : '保存计费策略' }}
           </button>
-          <button type="button" class="btn btn-secondary" :disabled="accountsLoading || accountsSaving" @click="loadAccounts">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="multipliersSaving || selectedAccountIds.length === 0"
+            @click="applyAccountMultiplier"
+          >
+            <Icon name="check" size="sm" />
+            {{ multipliersSaving ? '保存中...' : '保存账号乘数' }}
+          </button>
+          <button type="button" class="btn btn-secondary" :disabled="accountsLoading || accountsSaving || multipliersSaving" @click="loadAccounts">
             <Icon name="refresh" size="sm" :class="accountsLoading ? 'animate-spin' : ''" />
             刷新账号
           </button>
@@ -106,13 +133,16 @@
           <div v-if="accountsLoading" class="tools-empty min-h-[180px]">正在加载账号...</div>
           <div v-else-if="accounts.length === 0" class="tools-empty min-h-[180px]">暂无账号。</div>
           <div v-else class="overflow-x-auto">
-            <table class="min-w-[900px] divide-y divide-gray-200 text-sm dark:divide-dark-700">
+            <table class="min-w-[1120px] divide-y divide-gray-200 text-sm dark:divide-dark-700">
               <thead class="bg-gray-50 text-xs font-semibold text-gray-500 dark:bg-dark-900/60 dark:text-dark-400">
                 <tr>
                   <th class="tools-th">账号</th>
                   <th class="tools-th">平台/分组</th>
                   <th class="tools-th">状态</th>
                   <th class="tools-th">当前计费策略</th>
+                  <th class="tools-th text-right">账号原倍率</th>
+                  <th class="tools-th text-right">乘数</th>
+                  <th class="tools-th text-right">有效倍率</th>
                   <th class="tools-th text-right">操作</th>
                 </tr>
               </thead>
@@ -136,6 +166,9 @@
                       {{ strategyLabel(accountStrategy(account)) }}
                     </span>
                   </td>
+                  <td class="tools-td text-right font-mono text-xs">{{ formatMultiplier(account.rate_multiplier) }}</td>
+                  <td class="tools-td text-right font-mono text-xs">{{ formatMultiplier(accountMultiplier(account)) }}</td>
+                  <td class="tools-td text-right font-mono text-xs font-semibold">{{ formatMultiplier(effectiveAccountMultiplier(account)) }}</td>
                   <td class="tools-td text-right">
                     <button type="button" class="btn btn-secondary btn-sm" @click="selectSingleAccount(account.id)">
                       <Icon name="check" size="sm" />
@@ -204,10 +237,12 @@
                   </td>
                   <td class="tools-td text-right font-mono text-xs">{{ formatCost(audit.total_cost) }}</td>
                   <td class="tools-td text-right font-mono text-xs font-semibold">{{ formatCost(audit.actual_cost) }}</td>
-                  <td class="tools-td text-right font-mono text-xs">{{ formatCost(audit.account_billed_cost) }}</td>
+                  <td class="tools-td text-right font-mono text-xs">{{ formatCost(auditAccountBilledCost(audit)) }}</td>
                   <td class="tools-td text-right text-xs">
                     <div>用户 {{ formatMultiplier(audit.group_rate_multiplier) }}</div>
-                    <div class="text-gray-500 dark:text-dark-400">账号 {{ formatMultiplier(audit.account_rate_multiplier) }}</div>
+                    <div class="text-gray-500 dark:text-dark-400">账号 {{ formatMultiplier(auditBaseAccountMultiplier(audit)) }}</div>
+                    <div class="text-gray-500 dark:text-dark-400">乘数 {{ formatMultiplier(auditAccountMultiplierFactor(audit)) }}</div>
+                    <div class="font-medium text-gray-700 dark:text-dark-200">有效 {{ formatMultiplier(auditEffectiveAccountMultiplier(audit)) }}</div>
                   </td>
                   <td class="tools-td text-right">
                     <button type="button" class="btn btn-secondary btn-sm" @click="toggleAudit(audit)">
@@ -227,7 +262,7 @@
                       <span>账号统计基准 {{ formatCost(audit.account_stats_cost ?? audit.total_cost) }}</span>
                     </div>
                     <div class="overflow-x-auto rounded border border-gray-200 dark:border-dark-700">
-                      <table class="min-w-[940px] divide-y divide-gray-200 text-xs dark:divide-dark-700">
+                      <table class="min-w-[1040px] divide-y divide-gray-200 text-xs dark:divide-dark-700">
                         <thead class="bg-white text-gray-500 dark:bg-dark-900 dark:text-dark-400">
                           <tr>
                             <th class="tools-th">候选模型</th>
@@ -237,6 +272,7 @@
                             <th class="tools-th text-right">输出</th>
                             <th class="tools-th text-right">缓存</th>
                             <th class="tools-th text-right">TotalCost</th>
+                            <th class="tools-th text-right">账号成本</th>
                           </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-100 bg-white dark:divide-dark-900 dark:divide-dark-800">
@@ -251,6 +287,7 @@
                             <td class="tools-td text-right font-mono">{{ formatCost(candidate.output_cost + candidate.image_output_cost) }}</td>
                             <td class="tools-td text-right font-mono">{{ formatCost(candidate.cache_write_cost + candidate.cache_read_cost) }}</td>
                             <td class="tools-td text-right font-mono font-semibold">{{ formatCost(candidate.total_cost) }}</td>
+                            <td class="tools-td text-right font-mono font-semibold">{{ formatCost(candidateAccountBilledCost(audit, candidate)) }}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -272,7 +309,13 @@ import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api/admin'
 import type { Account } from '@/types'
 import { useAppStore } from '@/stores/app'
-import { getBillingAudits, type BillingAuditRecord } from './api'
+import {
+  getBillingAudits,
+  getBillingStrategyConfig,
+  updateAccountMultipliers,
+  type BillingAuditCandidate,
+  type BillingAuditRecord
+} from './api'
 
 type BillingStrategy = 'inherit' | 'channel_mapped' | 'requested' | 'upstream' | 'max_cost'
 
@@ -291,11 +334,14 @@ const selectedStrategy = ref<BillingStrategy>('max_cost')
 const accountQuery = ref('')
 const accountsLoading = ref(false)
 const accountsSaving = ref(false)
+const multipliersSaving = ref(false)
 const billingError = ref('')
 const auditAccountID = ref<number | ''>('')
 const auditRecords = ref<BillingAuditRecord[]>([])
 const auditsLoading = ref(false)
 const expandedAuditKeys = ref<Set<string>>(new Set())
+const accountMultipliers = ref<Record<string, number>>({})
+const selectedAccountMultiplier = ref(1)
 
 const accountGroupText = (account: Account): string => {
   const names = (account.groups || []).map((group) => group.name).filter(Boolean)
@@ -311,6 +357,23 @@ const accountStrategy = (account: Account): BillingStrategy => {
   }
   return 'inherit'
 }
+
+const accountMultiplier = (account: Account): number => {
+  const value = Number(accountMultipliers.value[String(account.id)] ?? 1)
+  return Number.isFinite(value) && value > 0 ? value : 1
+}
+
+const effectiveAccountMultiplier = (account: Account, factor = accountMultiplier(account)): number => {
+  const base = Number(account.rate_multiplier)
+  const normalizedBase = Number.isFinite(base) && base >= 0 ? base : 1
+  const normalizedFactor = Number.isFinite(factor) && factor > 0 ? factor : 1
+  return normalizedBase * normalizedFactor
+}
+
+const selectedMultiplierAccount = computed(() => {
+  if (selectedAccountIds.value.length !== 1) return undefined
+  return accounts.value.find((account) => account.id === selectedAccountIds.value[0])
+})
 
 const filteredAccounts = computed(() => {
   const query = accountQuery.value.trim().toLowerCase()
@@ -344,6 +407,27 @@ const strategyLabel = (strategy: unknown): string => billingStrategies.find((ite
 const auditKey = (audit: BillingAuditRecord): string => `${audit.request_id || audit.selected_model}-${audit.created_at}`
 
 const auditAccountLabel = (accountID: number): string => accounts.value.find((account) => account.id === accountID)?.name || `账号 #${accountID}`
+
+const auditBaseAccountMultiplier = (audit: BillingAuditRecord): number =>
+  audit.account_base_rate_multiplier ?? audit.account_rate_multiplier
+
+const auditAccountMultiplierFactor = (audit: BillingAuditRecord): number => {
+  if (audit.account_rate_multiplier_factor != null) return audit.account_rate_multiplier_factor
+  return 1
+}
+
+const auditEffectiveAccountMultiplier = (audit: BillingAuditRecord): number => {
+  if (audit.account_rate_multiplier_factor != null) return audit.account_rate_multiplier
+  return auditBaseAccountMultiplier(audit) * auditAccountMultiplierFactor(audit)
+}
+
+const auditAccountBilledCost = (audit: BillingAuditRecord): number => {
+  if (Number.isFinite(audit.account_billed_cost)) return audit.account_billed_cost
+  return audit.total_cost * auditEffectiveAccountMultiplier(audit)
+}
+
+const candidateAccountBilledCost = (audit: BillingAuditRecord, candidate: BillingAuditCandidate): number =>
+  candidate.account_billed_cost ?? candidate.total_cost * auditEffectiveAccountMultiplier(audit)
 
 const formatCost = (value: number | undefined): string => {
   const normalized = Number.isFinite(value) ? Number(value) : 0
@@ -398,11 +482,22 @@ const loadAccounts = async () => {
     accounts.value = result.items || []
     const availableIds = new Set(accounts.value.map((account) => account.id))
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => availableIds.has(id))
+    syncMultiplierInputFromSelection()
   } catch (error) {
     accounts.value = []
     billingError.value = errorMessage(error, '加载账号列表失败。')
   } finally {
     accountsLoading.value = false
+  }
+}
+
+const loadMultiplierConfig = async () => {
+  try {
+    const config = await getBillingStrategyConfig()
+    accountMultipliers.value = config.account_multipliers || {}
+    syncMultiplierInputFromSelection()
+  } catch (error) {
+    billingError.value = errorMessage(error, '加载账号倍率乘数失败。')
   }
 }
 
@@ -422,6 +517,7 @@ const toggleAccountSelection = (accountId: number, event: Event) => {
   selectedAccountIds.value = checked
     ? normalizeSelectedAccountIds([...selectedAccountIds.value, accountId])
     : selectedAccountIds.value.filter((id) => id !== accountId)
+  syncMultiplierInputFromSelection()
 }
 
 const selectFilteredAccounts = () => {
@@ -441,6 +537,13 @@ const clearAccountSelection = () => {
 
 const selectSingleAccount = (accountId: number) => {
   selectedAccountIds.value = [accountId]
+  syncMultiplierInputFromSelection()
+}
+
+const syncMultiplierInputFromSelection = () => {
+  if (selectedAccountIds.value.length !== 1) return
+  const account = accounts.value.find((item) => item.id === selectedAccountIds.value[0])
+  if (account) selectedAccountMultiplier.value = accountMultiplier(account)
 }
 
 const applyBillingStrategy = async () => {
@@ -465,8 +568,30 @@ const applyBillingStrategy = async () => {
   }
 }
 
+const applyAccountMultiplier = async () => {
+  if (selectedAccountIds.value.length === 0) return
+  const multiplier = Number(selectedAccountMultiplier.value)
+  if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier > 10000) {
+    billingError.value = '账号倍率乘数必须大于 0 且不超过 10000。'
+    return
+  }
+
+  multipliersSaving.value = true
+  billingError.value = ''
+  try {
+    const config = await updateAccountMultipliers(selectedAccountIds.value, multiplier)
+    accountMultipliers.value = config.account_multipliers || {}
+    appStore.showSuccess(`已将账号乘数 ${formatMultiplier(multiplier)} 应用到 ${selectedAccountIds.value.length} 个账号。`)
+  } catch (error) {
+    billingError.value = errorMessage(error, '保存账号倍率乘数失败。')
+  } finally {
+    multipliersSaving.value = false
+  }
+}
+
 onMounted(() => {
   void loadAccounts()
+  void loadMultiplierConfig()
   void loadAudits()
 })
 

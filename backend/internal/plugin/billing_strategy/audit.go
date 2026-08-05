@@ -20,44 +20,47 @@ const (
 // billing chain. It is intentionally separate from the host usage log so the
 // normal usage UI does not need to expose billing-strategy internals.
 type Candidate struct {
-	Model           string  `json:"model"`
-	PricingSource   string  `json:"pricing_source"`
-	Available       bool    `json:"available"`
-	Error           string  `json:"error,omitempty"`
-	BillingMode     string  `json:"billing_mode,omitempty"`
-	InputCost       float64 `json:"input_cost"`
-	ImageInputCost  float64 `json:"image_input_cost"`
-	OutputCost      float64 `json:"output_cost"`
-	ImageOutputCost float64 `json:"image_output_cost"`
-	CacheWriteCost  float64 `json:"cache_write_cost"`
-	CacheReadCost   float64 `json:"cache_read_cost"`
-	TotalCost       float64 `json:"total_cost"`
+	Model             string   `json:"model"`
+	PricingSource     string   `json:"pricing_source"`
+	Available         bool     `json:"available"`
+	Error             string   `json:"error,omitempty"`
+	BillingMode       string   `json:"billing_mode,omitempty"`
+	InputCost         float64  `json:"input_cost"`
+	ImageInputCost    float64  `json:"image_input_cost"`
+	OutputCost        float64  `json:"output_cost"`
+	ImageOutputCost   float64  `json:"image_output_cost"`
+	CacheWriteCost    float64  `json:"cache_write_cost"`
+	CacheReadCost     float64  `json:"cache_read_cost"`
+	TotalCost         float64  `json:"total_cost"`
+	AccountBilledCost *float64 `json:"account_billed_cost,omitempty"`
 }
 
 // AuditRecord is one recent max-cost billing decision. It contains no prompt
 // or credential data and is only exposed through the administrator tool.
 type AuditRecord struct {
-	RequestID             string      `json:"request_id,omitempty"`
-	AccountID             int64       `json:"account_id"`
-	RequestedModel        string      `json:"requested_model"`
-	MappingChain          string      `json:"mapping_chain,omitempty"`
-	Strategy              string      `json:"strategy"`
-	SelectedModel         string      `json:"selected_model"`
-	InputTokens           int         `json:"input_tokens"`
-	OutputTokens          int         `json:"output_tokens"`
-	CacheCreationTokens   int         `json:"cache_creation_tokens"`
-	CacheReadTokens       int         `json:"cache_read_tokens"`
-	ImageInputTokens      int         `json:"image_input_tokens"`
-	ImageOutputTokens     int         `json:"image_output_tokens"`
-	ImageCount            int         `json:"image_count"`
-	GroupRateMultiplier   float64     `json:"group_rate_multiplier"`
-	AccountRateMultiplier float64     `json:"account_rate_multiplier"`
-	TotalCost             float64     `json:"total_cost"`
-	ActualCost            float64     `json:"actual_cost"`
-	AccountStatsCost      *float64    `json:"account_stats_cost,omitempty"`
-	AccountBilledCost     float64     `json:"account_billed_cost"`
-	Candidates            []Candidate `json:"candidates"`
-	CreatedAt             time.Time   `json:"created_at"`
+	RequestID                   string      `json:"request_id,omitempty"`
+	AccountID                   int64       `json:"account_id"`
+	RequestedModel              string      `json:"requested_model"`
+	MappingChain                string      `json:"mapping_chain,omitempty"`
+	Strategy                    string      `json:"strategy"`
+	SelectedModel               string      `json:"selected_model"`
+	InputTokens                 int         `json:"input_tokens"`
+	OutputTokens                int         `json:"output_tokens"`
+	CacheCreationTokens         int         `json:"cache_creation_tokens"`
+	CacheReadTokens             int         `json:"cache_read_tokens"`
+	ImageInputTokens            int         `json:"image_input_tokens"`
+	ImageOutputTokens           int         `json:"image_output_tokens"`
+	ImageCount                  int         `json:"image_count"`
+	GroupRateMultiplier         float64     `json:"group_rate_multiplier"`
+	AccountBaseRateMultiplier   *float64    `json:"account_base_rate_multiplier,omitempty"`
+	AccountRateMultiplierFactor *float64    `json:"account_rate_multiplier_factor,omitempty"`
+	AccountRateMultiplier       float64     `json:"account_rate_multiplier"`
+	TotalCost                   float64     `json:"total_cost"`
+	ActualCost                  float64     `json:"actual_cost"`
+	AccountStatsCost            *float64    `json:"account_stats_cost,omitempty"`
+	AccountBilledCost           float64     `json:"account_billed_cost"`
+	Candidates                  []Candidate `json:"candidates"`
+	CreatedAt                   time.Time   `json:"created_at"`
 }
 
 type auditFile struct {
@@ -95,6 +98,7 @@ func Record(record AuditRecord) {
 	if record.AccountID <= 0 || strings.TrimSpace(record.SelectedModel) == "" {
 		return
 	}
+	enrichAccountSnapshotAudit(&record)
 	record.RequestedModel = strings.TrimSpace(record.RequestedModel)
 	record.SelectedModel = strings.TrimSpace(record.SelectedModel)
 	record.Strategy = strings.TrimSpace(record.Strategy)
@@ -115,6 +119,36 @@ func Record(record AuditRecord) {
 		auditState.items = auditState.items[:maxAuditRecords]
 	}
 	scheduleFlushLocked()
+}
+
+func enrichAccountSnapshotAudit(record *AuditRecord) {
+	if record == nil {
+		return
+	}
+	hasAccountSnapshot := false
+	for _, candidate := range record.Candidates {
+		if candidate.AccountBilledCost != nil {
+			hasAccountSnapshot = true
+			break
+		}
+	}
+	if !hasAccountSnapshot {
+		return
+	}
+	factor := AccountRateMultiplierFactor(record.AccountID)
+	baseRate := record.AccountRateMultiplier
+	if factor > 0 {
+		baseRate /= factor
+	}
+	if record.AccountBaseRateMultiplier == nil {
+		record.AccountBaseRateMultiplier = float64Pointer(baseRate)
+	}
+	if record.AccountRateMultiplierFactor == nil {
+		record.AccountRateMultiplierFactor = float64Pointer(factor)
+	}
+	if record.AccountStatsCost != nil {
+		record.TotalCost = *record.AccountStatsCost
+	}
 }
 
 // List returns newest-first records, optionally limited to one account.
@@ -149,7 +183,18 @@ func cloneCandidates(candidates []Candidate) []Candidate {
 	if len(candidates) == 0 {
 		return []Candidate{}
 	}
-	return append([]Candidate(nil), candidates...)
+	clone := append([]Candidate(nil), candidates...)
+	for index := range clone {
+		if clone[index].AccountBilledCost != nil {
+			cost := *clone[index].AccountBilledCost
+			clone[index].AccountBilledCost = &cost
+		}
+	}
+	return clone
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
 }
 
 func loadLocked() error {

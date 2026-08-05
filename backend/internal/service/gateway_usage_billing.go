@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -764,7 +765,11 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 				return s.calculateRecordUsageCost(ctx, result, apiKey, model, 1, 1, opts), nil
 			},
 			func(model string) string { return resolveBillingPricingSource(ctx, s.resolver, apiKey, model) },
+			ctx,
 		)
+		if maxDecision.AccountSnapshotError != nil {
+			return fmt.Errorf("resolve max-cost billing account snapshot: %w", maxDecision.AccountSnapshotError)
+		}
 		if maxDecision.SelectedCost != nil {
 			charge := pluginruntime.CalculateUserChargeCost(maxDecision.SelectedCost.TotalCost,
 				usageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier))
@@ -793,6 +798,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 创建使用日志
 	accountRateMultiplier := account.BillingRateMultiplier()
+	if maxDecision != nil && maxDecision.AccountSnapshotResolved {
+		accountRateMultiplier = maxDecision.AccountRateMultiplier
+	}
 	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost, opts)
 	if maxDecision != nil && maxDecision.SelectedCost != nil && userChargeCost != nil {
@@ -835,6 +843,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 				usageLog.AccountStatsCost = previousStatsCost
 			}
 		}
+	}
+	if maxDecision != nil && maxDecision.RawCost != nil && maxDecision.AccountSnapshotResolved {
+		accountStatsCost := maxDecision.RawCost.TotalCost
+		usageLog.AccountStatsCost = &accountStatsCost
 	}
 	if usageLog.AccountStatsCost != nil && cost != nil {
 		cost.TotalCost = *usageLog.AccountStatsCost
