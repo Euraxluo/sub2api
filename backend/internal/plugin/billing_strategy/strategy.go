@@ -238,6 +238,12 @@ func CalculateUserChargeCost(rawCost, rateMultiplier float64) float64 {
 	return rawCost * rateMultiplier
 }
 
+// CalculateAccountUserChargeCost applies the resolved account multiplier to
+// the raw token-derived cost for max-cost user billing.
+func CalculateAccountUserChargeCost(rawCost, accountRateMultiplier float64) float64 {
+	return CalculateUserChargeCost(rawCost, accountRateMultiplier)
+}
+
 func appendMappingChain(chain, before, after string) string {
 	chain, before, after = strings.TrimSpace(chain), strings.TrimSpace(before), strings.TrimSpace(after)
 	if after == "" || strings.EqualFold(before, after) {

@@ -111,3 +111,12 @@ func TestBillingRateAndChargeUseSelectedRawCost(t *testing.T) {
 	require.Equal(t, 5.0, BillingRate("per_request", 7, 3, 5, 2, 0, 1, 0))
 	require.Equal(t, 2.0, BillingRate("per_request", 7, 3, 5, 2, 0, 0, 1))
 }
+
+func TestCalculateAccountUserChargeCostUsesResolvedAccountMultiplier(t *testing.T) {
+	const rawTokenCost = 0.109867
+	const accountBaseMultiplier = 0.08
+	const accountMultiplier = 20.0
+
+	require.InDelta(t, 0.1757872,
+		CalculateAccountUserChargeCost(rawTokenCost, accountBaseMultiplier*accountMultiplier), 1e-12)
+}

@@ -775,6 +775,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 				usageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier))
 			userChargeCost = &charge
 		}
+		if maxDecision.AccountSnapshotResolved && maxDecision.RawCost != nil {
+			charge := pluginruntime.CalculateAccountUserChargeCost(maxDecision.RawCost.TotalCost, maxDecision.AccountRateMultiplier)
+			userChargeCost = &charge
+		}
 	}
 
 	// 确定 RequestedModel（渠道映射前的原始模型）

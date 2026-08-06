@@ -246,6 +246,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 				openAIUsageCostRate(result, maxDecision.SelectedCost, multiplier, imageMultiplier, videoMultiplier, baseMultiplier))
 			userChargeCost = &charge
 		}
+		if maxDecision.AccountSnapshotResolved && maxDecision.RawCost != nil {
+			charge := pluginruntime.CalculateAccountUserChargeCost(maxDecision.RawCost.TotalCost, maxDecision.AccountRateMultiplier)
+			userChargeCost = &charge
+		}
 	}
 	cost, err = s.calculateOpenAIRecordUsageCost(
 		ctx,

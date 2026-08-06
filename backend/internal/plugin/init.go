@@ -95,6 +95,10 @@ func CalculateUserChargeCost(rawCost, rateMultiplier float64) float64 {
 	return billing_strategy.CalculateUserChargeCost(rawCost, rateMultiplier)
 }
 
+func CalculateAccountUserChargeCost(rawCost, accountRateMultiplier float64) float64 {
+	return billing_strategy.CalculateAccountUserChargeCost(rawCost, accountRateMultiplier)
+}
+
 func ApplyVirtualBillingCost(rawTotal, virtualTotal float64, totalCost, actualCost *float64, components ...*float64) {
 	billing_strategy.ApplyVirtualBillingCost(rawTotal, virtualTotal, totalCost, actualCost, components...)
 }
