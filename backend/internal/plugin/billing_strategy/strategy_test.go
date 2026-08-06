@@ -73,6 +73,28 @@ func TestResolveMaxCostDecisionFailsWhenAccountSnapshotRequestFails(t *testing.T
 	require.Zero(t, decision.VirtualModelCost)
 }
 
+func TestResolveMaxCostDecisionFallsBackToSelectedAccountRate(t *testing.T) {
+	t.Setenv("SUB2API_BILLING_STRATEGY_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv(accountSnapshotBaseURLEnv, "")
+	t.Setenv(accountSnapshotAdminAPIKeyEnv, "")
+
+	ctx := WithAccountRateMultiplier(context.Background(), 42, 0.08)
+	decision, err := ResolveMaxCostDecisionWithAccountSnapshot(ctx, DecisionInput{
+		AccountID: 42,
+		Models:    []string{"winner"},
+		Evaluate: func(string) (Candidate, error) {
+			return Candidate{Available: true, TotalCost: 0.109867}, nil
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "winner", decision.SelectedModel)
+	require.True(t, decision.AccountSnapshotResolved)
+	require.InDelta(t, 0.08, decision.AccountBaseRateMultiplier, 1e-12)
+	require.InDelta(t, 0.08, decision.AccountRateMultiplier, 1e-12)
+	require.InDelta(t, 0.00878936, decision.VirtualModelCost, 1e-12)
+}
+
 func TestResolveMaxCostDecisionKeepsSelectionUnmultiplied(t *testing.T) {
 	decision := ResolveMaxCostDecision(DecisionInput{
 		Models: []string{"cheap", "cheap", "expensive"},

@@ -56,6 +56,12 @@ type BillingStrategyInput = billing_strategy.DecisionInput
 
 const BillingModelSourceMaxCost = billing_strategy.BillingModelSourceMaxCost
 
+// WithBillingStrategyAccountRateMultiplier passes the selected account's
+// in-process rate to the billing plugin as a fallback snapshot.
+func WithBillingStrategyAccountRateMultiplier(ctx context.Context, accountID int64, multiplier float64) context.Context {
+	return billing_strategy.WithAccountRateMultiplier(ctx, accountID, multiplier)
+}
+
 // ResolveMaxCostBillingDecision keeps model candidate expansion and selection
 // inside the billing-strategy plugin.
 func ResolveMaxCostBillingDecision(input BillingStrategyInput) BillingStrategyDecision {

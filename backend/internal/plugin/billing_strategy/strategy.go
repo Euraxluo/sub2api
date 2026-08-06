@@ -111,7 +111,11 @@ func ResolveMaxCostDecisionWithAccountSnapshot(ctx context.Context, input Decisi
 	}
 	snapshot, err := fetchAccountSnapshot(ctx, input.AccountID)
 	if err != nil {
-		return decision, err
+		if fallback, ok := accountRateMultiplierFromContext(ctx, input.AccountID); ok {
+			snapshot = fallback
+		} else {
+			return decision, err
+		}
 	}
 	factor, err := configuredAccountRateMultiplierFactor(snapshot.AccountID)
 	if err != nil {

@@ -758,6 +758,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		pluginEffort = strings.TrimSpace(*result.ReasoningEffort)
 	}
 	if pluginruntime.EffectiveBillingModelSource(account.Extra, input.BillingModelSource) == pluginruntime.BillingModelSourceMaxCost {
+		ctx = pluginruntime.WithBillingStrategyAccountRateMultiplier(ctx, account.ID, account.BillingRateMultiplier())
 		maxDecision = resolveMaxCostBillingDecision(
 			account.ID, pluginEffort, input.ModelMappingChain,
 			[]string{input.OriginalModel, input.ChannelMappedModel, concreteBillingModel, result.UpstreamModel, result.Model, billingModel},

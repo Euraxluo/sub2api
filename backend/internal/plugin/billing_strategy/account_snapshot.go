@@ -34,6 +34,39 @@ var (
 	ErrAccountSnapshotInvalid     = errors.New("billing strategy account snapshot is invalid")
 )
 
+type accountRateMultiplierContextKey struct{}
+
+type accountRateMultiplierContextValue struct {
+	accountID  int64
+	multiplier float64
+}
+
+// WithAccountRateMultiplier supplies the already-selected account snapshot as
+// a local fallback when the in-process admin HTTP lookup is unavailable.
+func WithAccountRateMultiplier(ctx context.Context, accountID int64, multiplier float64) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if accountID <= 0 || multiplier < 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
+		return ctx
+	}
+	return context.WithValue(ctx, accountRateMultiplierContextKey{}, accountRateMultiplierContextValue{
+		accountID:  accountID,
+		multiplier: multiplier,
+	})
+}
+
+func accountRateMultiplierFromContext(ctx context.Context, accountID int64) (AccountSnapshot, bool) {
+	if ctx == nil || accountID <= 0 {
+		return AccountSnapshot{}, false
+	}
+	value, ok := ctx.Value(accountRateMultiplierContextKey{}).(accountRateMultiplierContextValue)
+	if !ok || value.accountID != accountID {
+		return AccountSnapshot{}, false
+	}
+	return AccountSnapshot{AccountID: accountID, RateMultiplier: value.multiplier}, true
+}
+
 // AccountSnapshot is the account pricing state used by one billing decision.
 // The snapshot is fetched once and then reused for the virtual price, audit,
 // and downstream account-cost accounting.

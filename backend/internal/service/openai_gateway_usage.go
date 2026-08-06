@@ -229,6 +229,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		pluginEffort = strings.TrimSpace(*result.ReasoningEffort)
 	}
 	if pluginruntime.EffectiveBillingModelSource(account.Extra, input.BillingModelSource) == pluginruntime.BillingModelSourceMaxCost {
+		ctx = pluginruntime.WithBillingStrategyAccountRateMultiplier(ctx, account.ID, account.BillingRateMultiplier())
 		maxDecision = resolveMaxCostBillingDecision(
 			account.ID, pluginEffort, input.ModelMappingChain, billingModels,
 			func(model string) (*CostBreakdown, error) {
