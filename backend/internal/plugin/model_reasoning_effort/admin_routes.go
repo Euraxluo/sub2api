@@ -81,6 +81,9 @@ func clearAllConfigs(c *gin.Context) {
 	}
 	cleared := len(config.Accounts)
 	config.Accounts = map[string]AccountConfig{}
+	// A clear action must remain cleared. Otherwise the running automatic
+	// refresh would immediately write its generated mappings back.
+	config.Auto.Enabled = false
 	if err := SaveConfig(config); err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -183,6 +186,11 @@ func updateAuto(c *gin.Context) {
 	var autoConfig AutoRoutingConfig
 	if err := c.ShouldBindJSON(&autoConfig); err != nil {
 		response.BadRequest(c, "invalid automatic model reasoning config: "+err.Error())
+		return
+	}
+	autoConfig = normalizeAutoRoutingConfig(autoConfig)
+	if autoConfig.Enabled && len(automaticMappingTargetAccounts(autoConfig)) == 0 {
+		response.BadRequest(c, "select at least one account for automatic IQ mappings")
 		return
 	}
 	config, err := LoadConfig()

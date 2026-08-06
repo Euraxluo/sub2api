@@ -78,6 +78,29 @@ func TestTaskViewReturnsSecretNamesWithoutValues(t *testing.T) {
 	require.Equal(t, []string{"token"}, view.SecretKeys)
 }
 
+func TestSub2APIUpstreamBalanceAcceptsPasswordLoginCredentials(t *testing.T) {
+	manager, err := NewManager(filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err)
+
+	view, err := manager.CreateTask(TaskDraft{
+		Name: "上游余额", Kind: TaskKindBuiltin, BuiltinID: builtinSub2APIBalance,
+		Input:           map[string]any{"base_url": "https://upstream.example", "login_email": "monitor@example.com"},
+		Secrets:         map[string]string{"login_password": "password-test"},
+		IntervalSeconds: 60, TimeoutSeconds: 5,
+		NotifyPolicy: NotifyNever, CooldownSeconds: 60,
+	})
+	require.NoError(t, err)
+	require.Contains(t, view.SecretKeys, "login_password")
+
+	_, err = manager.CreateTask(TaskDraft{
+		Name: "上游余额", Kind: TaskKindBuiltin, BuiltinID: builtinSub2APIBalance,
+		Input:           map[string]any{"base_url": "https://upstream.example", "login_email": "monitor@example.com"},
+		IntervalSeconds: 60, TimeoutSeconds: 5,
+		NotifyPolicy: NotifyNever, CooldownSeconds: 60,
+	})
+	require.EqualError(t, err, "登录账号与登录密码必须同时填写")
+}
+
 func TestManagerPersistsBuiltinSecretRotation(t *testing.T) {
 	builtinID := "test-secret-rotation-" + uuid.NewString()
 	RegisterBuiltin(BuiltinDefinition{

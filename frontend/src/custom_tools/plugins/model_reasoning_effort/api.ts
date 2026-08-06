@@ -74,15 +74,18 @@ export interface ModelReasoningMetric {
   cost_samples?: number
 }
 
+export interface ModelReasoningAutoPlan {
+  generated_at?: string
+  baseline?: ModelReasoningMetric
+  baseline_limit?: number
+  max_iq?: number
+  bands?: Array<{ name: string; min_iq: number; max_iq?: number; target_model?: string; target_effort?: string }>
+  mappings?: ModelReasoningMapping[]
+}
+
 export interface ModelReasoningAutoStatus {
-  plan?: {
-    generated_at?: string
-    baseline?: ModelReasoningMetric
-    baseline_limit?: number
-    max_iq?: number
-    bands?: Array<{ name: string; min_iq: number; max_iq?: number; target_model?: string; target_effort?: string }>
-    mappings?: ModelReasoningMapping[]
-  }
+  plan?: ModelReasoningAutoPlan
+  account_plans?: Record<string, ModelReasoningAutoPlan>
   metrics?: ModelReasoningMetric[]
   last_refresh_at?: string
   last_error?: string

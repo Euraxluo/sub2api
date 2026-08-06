@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,19 +16,25 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const builtinSub2APIBalance = "sub2api_upstream_balance"
+const (
+	builtinSub2APIBalance = "sub2api_upstream_balance"
+	sub2APIJobUserAgent   = "Go-http-client/1.1"
+)
 
 func init() {
 	RegisterBuiltin(BuiltinDefinition{
 		ID:          builtinSub2APIBalance,
 		Name:        "Sub2API 上游余额监控",
-		Description: "刷新上游 Sub2API 登录态，读取用户资料中的余额，并在低于阈值时触发通知。",
+		Description: "使用 API Key、Refresh Token 或账号密码读取上游资料中的余额，并在低于阈值时触发通知。",
 		Fields: []FieldDefinition{
 			{Key: "target_name", Label: "上游名称", Type: "text", Default: "Sub2API 上游", Placeholder: "例如：香港上游"},
 			{Key: "base_url", Label: "上游地址", Type: "url", Required: true, Placeholder: "https://upstream.example.com"},
-			{Key: "refresh_token", Label: "Refresh Token", Type: "password", Secret: true, Help: "Refresh Token 与 API Key 至少填写一个。"},
-			{Key: "api_key", Label: "API Key / Access Token", Type: "password", Secret: true, Help: "填写后直接作为 Bearer Token 使用。"},
+			{Key: "login_email", Label: "登录账号", Type: "text", Placeholder: "name@example.com", Help: "与登录密码同时填写后启用登录模式，并覆盖已保存的 API Key / Access Token。首次登录后会自动保存上游返回的 Refresh Token。"},
+			{Key: "login_password", Label: "登录密码", Type: "password", Secret: true, Help: "仅用于从运行该任务的容器登录上游；不显示在任务列表或执行记录中。"},
+			{Key: "refresh_token", Label: "Refresh Token", Type: "password", Secret: true, Help: "可单独填写；账号密码登录后也会自动保存并轮换。"},
+			{Key: "api_key", Label: "API Key / Access Token", Type: "password", Secret: true, Help: "未启用账号密码登录时，填写后直接作为 Bearer Token 使用。"},
 			{Key: "threshold", Label: "余额阈值", Type: "number", Default: 10.0},
+			{Key: "login_path", Label: "登录接口", Type: "text", Default: "/api/v1/auth/login"},
 			{Key: "refresh_path", Label: "刷新接口", Type: "text", Default: "/api/v1/auth/refresh"},
 			{Key: "profile_path", Label: "用户资料接口", Type: "text", Default: "/api/v1/user/profile"},
 			{Key: "balance_path", Label: "余额 JSON 路径", Type: "text", Default: "data.balance", Help: "兼容 gjson 路径；缺失时自动尝试 balance 和 data.quota。"},
@@ -49,20 +56,41 @@ func runSub2APIUpstreamBalance(ctx context.Context, payload RunPayload) (Result,
 		return Result{}, fmt.Errorf("threshold must be non-negative")
 	}
 
-	token := strings.TrimSpace(payload.Secrets["api_key"])
+	loginEmail := strings.TrimSpace(inputString(payload.Input, "login_email", ""))
+	loginPassword := payload.Secrets["login_password"]
+	passwordLoginEnabled := loginEmail != "" && strings.TrimSpace(loginPassword) != ""
+	token := ""
+	if !passwordLoginEnabled {
+		token = strings.TrimSpace(payload.Secrets["api_key"])
+	}
 	if token == "" {
 		refreshToken := strings.TrimSpace(payload.Secrets["refresh_token"])
-		if refreshToken == "" {
-			return Result{}, fmt.Errorf("refresh_token or api_key is required")
+		var updatedRefreshToken string
+
+		if refreshToken != "" {
+			refreshPath := normalizeEndpointPath(inputString(payload.Input, "refresh_path", "/api/v1/auth/refresh"))
+			token, updatedRefreshToken, err = refreshSub2APIToken(ctx, baseURL+refreshPath, refreshToken)
+			if err != nil {
+				if loginEmail == "" || strings.TrimSpace(loginPassword) == "" || !isSub2APIAuthenticationFailure(err) {
+					return result, fmt.Errorf("refresh upstream token: %w", err)
+				}
+				token, updatedRefreshToken, err = loginSub2API(ctx, baseURL+normalizeEndpointPath(inputString(payload.Input, "login_path", "/api/v1/auth/login")), loginEmail, loginPassword)
+				if err != nil {
+					return result, fmt.Errorf("login upstream account after refresh failed: %w", err)
+				}
+			}
+		} else {
+			if loginEmail == "" || strings.TrimSpace(loginPassword) == "" {
+				return Result{}, fmt.Errorf("refresh_token, api_key, or login_email and login_password are required")
+			}
+			token, updatedRefreshToken, err = loginSub2API(ctx, baseURL+normalizeEndpointPath(inputString(payload.Input, "login_path", "/api/v1/auth/login")), loginEmail, loginPassword)
+			if err != nil {
+				return result, fmt.Errorf("login upstream account: %w", err)
+			}
 		}
-		refreshPath := normalizeEndpointPath(inputString(payload.Input, "refresh_path", "/api/v1/auth/refresh"))
-		var rotatedRefreshToken string
-		token, rotatedRefreshToken, err = refreshSub2APIToken(ctx, baseURL+refreshPath, refreshToken)
-		if err != nil {
-			return Result{}, fmt.Errorf("refresh upstream token: %w", err)
-		}
-		if rotatedRefreshToken != "" && rotatedRefreshToken != refreshToken {
-			result.secretUpdates = map[string]string{"refresh_token": rotatedRefreshToken}
+
+		if updatedRefreshToken != "" && updatedRefreshToken != refreshToken {
+			result.secretUpdates = map[string]string{"refresh_token": updatedRefreshToken}
 		}
 	}
 
@@ -104,18 +132,49 @@ func refreshSub2APIToken(ctx context.Context, endpoint, refreshToken string) (st
 	if err != nil {
 		return "", "", err
 	}
-	var accessToken string
-	for _, path := range []string{"data.access_token", "data.auth_token", "data.token", "access_token", "auth_token", "token"} {
-		if value := strings.TrimSpace(gjson.GetBytes(body, path).String()); value != "" {
-			accessToken = value
-			break
-		}
-	}
+	accessToken := accessTokenFromResponse(body)
 	if accessToken == "" {
 		return "", "", fmt.Errorf("upstream refresh response did not contain an access token")
 	}
 	rotatedRefreshToken := firstJSONString(body, "data.refresh_token", "refresh_token")
 	return accessToken, rotatedRefreshToken, nil
+}
+
+func loginSub2API(ctx context.Context, endpoint, email, password string) (string, string, error) {
+	payload, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	body, err := sub2APIRequest(ctx, http.MethodPost, endpoint, "", payload)
+	if err != nil {
+		return "", "", err
+	}
+	if gjson.GetBytes(body, "data.requires_2fa").Bool() || gjson.GetBytes(body, "requires_2fa").Bool() {
+		return "", "", fmt.Errorf("upstream login requires 2FA; use a dedicated monitoring credential instead")
+	}
+	accessToken := accessTokenFromResponse(body)
+	if accessToken == "" {
+		return "", "", fmt.Errorf("upstream login response did not contain an access token")
+	}
+	return accessToken, firstJSONString(body, "data.refresh_token", "refresh_token"), nil
+}
+
+func accessTokenFromResponse(body []byte) string {
+	return firstJSONString(body,
+		"data.access_token", "data.auth_token", "data.token",
+		"access_token", "auth_token", "token",
+	)
+}
+
+func isSub2APIAuthenticationFailure(err error) bool {
+	var upstreamErr *sub2APIHTTPError
+	return errors.As(err, &upstreamErr) && (upstreamErr.StatusCode == http.StatusUnauthorized || upstreamErr.StatusCode == http.StatusForbidden)
+}
+
+type sub2APIHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *sub2APIHTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
 }
 
 func sub2APIRequest(ctx context.Context, method, endpoint, token string, body []byte) ([]byte, error) {
@@ -124,6 +183,7 @@ func sub2APIRequest(ctx context.Context, method, endpoint, token string, body []
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", sub2APIJobUserAgent)
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -144,7 +204,7 @@ func sub2APIRequest(ctx context.Context, method, endpoint, token string, body []
 		return nil, fmt.Errorf("upstream response is too large")
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, tailText(strings.TrimSpace(string(data)), 500))
+		return nil, &sub2APIHTTPError{StatusCode: resp.StatusCode, Body: tailText(strings.TrimSpace(string(data)), 500)}
 	}
 	return data, nil
 }

@@ -99,7 +99,7 @@
             <Icon name="trash" size="sm" />
             {{ reasoningClearSaving ? '清空中...' : '清空所有账号映射' }}
           </button>
-          <p class="input-hint">会覆盖所选账号的手工映射；自动 IQ 映射的账号范围仍单独配置。</p>
+          <p class="input-hint">会覆盖所选账号的映射；自动 IQ 刷新也会覆盖其选中的账号映射。</p>
         </div>
       </div>
 
@@ -144,7 +144,7 @@
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">自动 IQ 映射</h3>
-          <p class="text-xs text-gray-500 dark:text-dark-400">只读取 GPT 系列 Radar 最新 IQ 采样；自动规则保存在插件配置和内存快照中。</p>
+          <p class="text-xs text-gray-500 dark:text-dark-400">只读取 GPT 系列 Radar 最新 IQ 采样；每个选中账号都会独立计算并写入自己的映射。</p>
         </div>
         <div class="flex gap-2">
           <button type="button" class="btn btn-secondary btn-sm" :disabled="reasoningAutoLoading" @click="refreshReasoningAuto">
@@ -229,12 +229,12 @@
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
           <label class="text-sm font-medium text-gray-900 dark:text-white">自动映射账号</label>
           <span class="text-xs text-gray-500 dark:text-dark-400">
-            {{ reasoningAutoConfig.account_ids?.length ? `已选择 ${reasoningAutoConfig.account_ids.length} 个账号` : '未选择时对全部 OpenAI 账号生效' }}
+            {{ reasoningAutoConfig.account_ids?.length ? `已选择 ${reasoningAutoConfig.account_ids.length} 个账号` : '保存时会写入当前全部 OpenAI 账号' }}
           </span>
         </div>
         <details v-if="reasoningAccounts.length" class="account-multi-select">
           <summary class="account-multi-trigger">
-            <span class="min-w-0 truncate">{{ reasoningAccountSelectionText(reasoningAutoConfig.account_ids || [], '全部 OpenAI 账号') }}</span>
+            <span class="min-w-0 truncate">{{ reasoningAccountSelectionText(reasoningAutoConfig.account_ids || [], '保存时选择全部 OpenAI 账号') }}</span>
             <Icon name="chevronDown" size="sm" class="shrink-0 text-gray-400" />
           </summary>
           <div class="account-multi-menu">
@@ -291,7 +291,7 @@
       </div>
       <div v-if="reasoningAutoStatus.last_error" class="mt-2 text-xs text-red-600 dark:text-red-300">{{ reasoningAutoStatus.last_error }}</div>
       <div v-if="reasoningAutoStatus.plan?.baseline" class="mt-2 text-xs text-gray-500 dark:text-dark-400">
-        Luna 基准 {{ formatAutoIQ(reasoningAutoStatus.plan.baseline.iq) }} · 直映上限 {{ formatAutoIQ(reasoningAutoStatus.plan.baseline_limit) }} · 当前自动规则 {{ reasoningAutoMappings.length }} 条
+        已计算 {{ automaticAccountPlanCount }} 个账号 · Luna 基准 {{ formatAutoIQ(reasoningAutoStatus.plan.baseline.iq) }} · 直映上限 {{ formatAutoIQ(reasoningAutoStatus.plan.baseline_limit) }} · 当前自动规则 {{ reasoningAutoMappings.length }} 条
       </div>
       <div class="mt-3 overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700">
         <div class="border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-700 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-200">
@@ -301,15 +301,17 @@
           <table class="min-w-[720px] divide-y divide-gray-200 text-xs dark:divide-dark-700">
             <thead class="text-left text-gray-500 dark:text-dark-400">
               <tr>
-                <th class="py-2 pl-3 pr-3">源模型</th>
+                <th class="py-2 pl-3 pr-3">账号</th>
+                <th class="py-2 pr-3">源模型</th>
                 <th class="py-2 pr-3">源 effort</th>
                 <th class="py-2 pr-3">目标模型</th>
                 <th class="py-2 pr-3">目标 effort</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-dark-800">
-              <tr v-for="mapping in reasoningAutoMappings" :key="`${mapping.from_model}-${mapping.from_effort || ''}-${mapping.to_model || ''}-${mapping.to_effort}`">
-                <td class="py-2 pl-3 pr-3 font-mono">{{ mapping.from_model }}</td>
+              <tr v-for="mapping in reasoningAutoMappings" :key="`${mapping.account_id || ''}-${mapping.from_model}-${mapping.from_effort || ''}-${mapping.to_model || ''}-${mapping.to_effort}`">
+                <td class="py-2 pl-3 pr-3">{{ mapping.account_id ? `#${mapping.account_id}` : '-' }}</td>
+                <td class="py-2 pr-3 font-mono">{{ mapping.from_model }}</td>
                 <td class="py-2 pr-3 font-mono">{{ mapping.from_effort || 'medium' }}</td>
                 <td class="py-2 pr-3 font-mono">{{ mapping.to_model || reasoningAutoConfig.baseline_model || '-' }}</td>
                 <td class="py-2 pr-3 font-mono">{{ mapping.to_effort }}</td>
@@ -338,7 +340,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import Icon from '@/components/icons/Icon.vue'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores/app'
@@ -395,10 +397,14 @@ const defaultReasoningAutoConfig = (): ModelReasoningAutoConfig => ({
 const reasoningAutoConfig = ref<ModelReasoningAutoConfig>(defaultReasoningAutoConfig())
 const unavailableModelsText = ref('')
 const reasoningAutoStatus = ref<ModelReasoningAutoStatus>({})
-const reasoningAutoMappings = ref<Array<{ from_model: string; from_effort?: string; to_model?: string; to_effort: string }>>([])
+const reasoningAutoMappings = ref<Array<{ account_id?: string; from_model: string; from_effort?: string; to_model?: string; to_effort: string }>>([])
 const reasoningStats = ref<ModelReasoningUsageStat[]>([])
 const reasoningAutoLoading = ref(false)
 const reasoningAutoSaving = ref(false)
+const automaticAccountPlanCount = computed(() => {
+  const count = Object.keys(reasoningAutoStatus.value.account_plans || {}).length
+  return count || (reasoningAutoStatus.value.plan?.baseline ? 1 : 0)
+})
 
 const errorMessage = (error: unknown, fallback: string) => {
   if (error && typeof error === 'object') {
@@ -449,13 +455,26 @@ async function loadReasoningAuto() {
     reasoningAutoConfig.value = normalizeReasoningAutoConfig(auto?.config)
     syncUnavailableModelsText()
     reasoningAutoStatus.value = auto.status || {}
-    reasoningAutoMappings.value = auto.mappings || []
+    reasoningAutoMappings.value = flattenAutoMappings(auto.status?.account_plans, auto.mappings || [])
     reasoningStats.value = stats || []
   } catch (error) {
     reasoningError.value = errorMessage(error, '加载自动 IQ 映射失败。')
   } finally {
     reasoningAutoLoading.value = false
   }
+}
+
+function flattenAutoMappings(
+  plans: ModelReasoningAutoStatus['account_plans'] | undefined,
+  fallback: Array<{ from_model: string; from_effort?: string; to_model?: string; to_effort: string }>
+) {
+  if (plans && Object.keys(plans).length > 0) {
+    return Object.entries(plans).flatMap(([accountID, plan]) => (plan.mappings || []).map((mapping) => ({
+      ...mapping,
+      account_id: accountID
+    })))
+  }
+  return fallback
 }
 
 function normalizeReasoningAutoConfig(value: Partial<ModelReasoningAutoConfig> | null | undefined): ModelReasoningAutoConfig {
@@ -610,6 +629,11 @@ async function saveReasoningAuto() {
   reasoningError.value = ''
   try {
     reasoningAutoConfig.value.unavailable_models = parseUnavailableModels(unavailableModelsText.value)
+    if ((reasoningAutoConfig.value.account_ids || []).length === 0) {
+      const accountIDs = normalizeReasoningAccountIDs(reasoningAccounts.value.map((account) => account.id))
+      if (accountIDs.length === 0) throw new Error('请先加载并选择至少一个 OpenAI 账号。')
+      reasoningAutoConfig.value.account_ids = accountIDs
+    }
     await updateModelReasoningAuto(reasoningAutoConfig.value)
     await loadReasoningAuto()
     appStore.showSuccess('自动 IQ 映射配置已保存。')
@@ -688,7 +712,7 @@ async function applyReasoningToSelectedAccounts() {
 }
 
 async function clearAllReasoningAccountMappings() {
-  if (!window.confirm('确认清空所有 OpenAI 账号的手工模型映射吗？自动 IQ 配置不会被删除。')) return
+  if (!window.confirm('确认清空所有 OpenAI 账号的模型映射吗？这会同时停止自动 IQ 写入，公式配置会保留。')) return
   reasoningClearSaving.value = true
   reasoningError.value = ''
   try {
@@ -696,7 +720,8 @@ async function clearAllReasoningAccountMappings() {
     reasoningRows.value = []
     selectedReasoningBatchAccountIds.value = []
     if (selectedReasoningAccountId.value != null) await loadReasoningAccount(selectedReasoningAccountId.value)
-    appStore.showSuccess(`已清空 ${result.cleared_accounts} 个账号的手工映射。`)
+    await loadReasoningAuto()
+    appStore.showSuccess(`已清空 ${result.cleared_accounts} 个账号的映射，并停止自动 IQ 写入。`)
   } catch (error) {
     reasoningError.value = errorMessage(error, '清空所有账号映射失败。')
   } finally {

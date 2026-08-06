@@ -665,10 +665,18 @@ func applyDraft(task *Task, draft TaskDraft, updating bool, now time.Time) error
 		if err := validateBuiltinFields(task, builtin.definition.Fields); err != nil {
 			return err
 		}
-		if draft.BuiltinID == builtinSub2APIBalance &&
-			strings.TrimSpace(task.Secrets["refresh_token"]) == "" &&
-			strings.TrimSpace(task.Secrets["api_key"]) == "" {
-			return errors.New("Refresh Token 与 API Key / Access Token 至少填写一个")
+		if draft.BuiltinID == builtinSub2APIBalance {
+			loginEmail, hasLoginEmail := task.Input["login_email"]
+			hasLoginEmail = hasLoginEmail && strings.TrimSpace(fmt.Sprint(loginEmail)) != ""
+			hasLoginPassword := strings.TrimSpace(task.Secrets["login_password"]) != ""
+			if hasLoginEmail != hasLoginPassword {
+				return errors.New("登录账号与登录密码必须同时填写")
+			}
+			if strings.TrimSpace(task.Secrets["refresh_token"]) == "" &&
+				strings.TrimSpace(task.Secrets["api_key"]) == "" &&
+				!hasLoginEmail {
+				return errors.New("请填写 API Key、Refresh Token，或登录账号和密码")
+			}
 		}
 		task.Script = ""
 	} else if draft.Kind == TaskKindJavaScript {

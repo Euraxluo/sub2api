@@ -87,15 +87,19 @@ type AutoMappingPlan struct {
 }
 
 type AutoRoutingSnapshot struct {
-	Plan          AutoMappingPlan `json:"plan"`
-	Metrics       []ModelMetric   `json:"metrics"`
-	LastRefreshAt time.Time       `json:"last_refresh_at,omitempty"`
-	LastError     string          `json:"last_error,omitempty"`
+	// Plan is retained as the first selected account's plan for existing API
+	// clients. AccountPlans is the source of truth for account-scoped output.
+	Plan          AutoMappingPlan            `json:"plan"`
+	AccountPlans  map[string]AutoMappingPlan `json:"account_plans,omitempty"`
+	Metrics       []ModelMetric              `json:"metrics"`
+	LastRefreshAt time.Time                  `json:"last_refresh_at,omitempty"`
+	LastError     string                     `json:"last_error,omitempty"`
 }
 
 var (
 	autoSnapshot     atomic.Pointer[AutoRoutingSnapshot]
 	autoRunnerMu     sync.Mutex
+	autoRefreshMu    sync.Mutex
 	autoRunnerCancel context.CancelFunc
 )
 
@@ -302,6 +306,13 @@ func startAutoRefresh() {
 	ctx, cancel := context.WithCancel(context.Background())
 	autoRunnerCancel = cancel
 	options := normalizeAutoRoutingConfig(config.Auto)
+	if len(automaticMappingTargetAccounts(options)) == 0 {
+		autoSnapshot.Store(nil)
+		autoRunnerCancel = nil
+		cancel()
+		autoRunnerMu.Unlock()
+		return
+	}
 	autoRunnerMu.Unlock()
 
 	go runAutoRefresh(ctx, options)
@@ -398,6 +409,9 @@ func nextCronRefresh(now time.Time, schedules []cron.Schedule) time.Time {
 // RefreshAutoMappings fetches the public Radar feeds and publishes a complete
 // immutable snapshot. A failed refresh never destroys the previous snapshot.
 func RefreshAutoMappings(ctx context.Context) error {
+	autoRefreshMu.Lock()
+	defer autoRefreshMu.Unlock()
+
 	config, err := LoadConfig()
 	if err != nil {
 		return err
@@ -406,24 +420,48 @@ func RefreshAutoMappings(ctx context.Context) error {
 		return errors.New("automatic IQ routing is disabled")
 	}
 	auto := normalizeAutoRoutingConfig(config.Auto)
+	accountIDs := automaticMappingTargetAccounts(auto)
+	if len(accountIDs) == 0 {
+		return errors.New("automatic IQ routing requires at least one selected account")
+	}
 	metrics, err := FetchRadarMetrics(ctx, auto)
 	if err != nil {
 		return err
 	}
 	metrics = filterUnavailableMetrics(metrics, auto.UnavailableModels)
-	plan, err := ComputeAutomaticMappings(metrics, AutoMappingOptions{
-		BaselineModel: auto.BaselineModel,
-		BaselineGap:   auto.BaselineGap,
-		IQAggregation: auto.IQAggregation,
-		IQWindow:      time.Duration(auto.IQWindowHours) * time.Hour,
-		FormulaMode:   auto.FormulaMode,
-		GPTOnly:       true,
-	})
-	if err != nil {
+	if config.Accounts == nil {
+		config.Accounts = map[string]AccountConfig{}
+	}
+	accountPlans := make(map[string]AutoMappingPlan, len(accountIDs))
+	var primaryPlan AutoMappingPlan
+	for index, accountID := range accountIDs {
+		// Each account gets its own formula evaluation and its own persisted
+		// mapping slice. This deliberately avoids a shared runtime mapping.
+		plan, err := ComputeAutomaticMappings(append([]ModelMetric(nil), metrics...), AutoMappingOptions{
+			BaselineModel: auto.BaselineModel,
+			BaselineGap:   auto.BaselineGap,
+			IQAggregation: auto.IQAggregation,
+			IQWindow:      time.Duration(auto.IQWindowHours) * time.Hour,
+			FormulaMode:   auto.FormulaMode,
+			GPTOnly:       true,
+		})
+		if err != nil {
+			return fmt.Errorf("compute automatic mappings for account %d: %w", accountID, err)
+		}
+		plan.Mappings = filterUnavailableTargetMappings(plan.Mappings, auto.UnavailableModels)
+		accountKey := strconv.FormatInt(accountID, 10)
+		config.Accounts[accountKey] = AccountConfig{Mappings: append([]Mapping(nil), plan.Mappings...)}
+		accountPlans[accountKey] = clonePlan(plan)
+		if index == 0 {
+			primaryPlan = clonePlan(plan)
+		}
+	}
+	if err := saveConfig(config, false); err != nil {
 		return err
 	}
 	autoSnapshot.Store(&AutoRoutingSnapshot{
-		Plan:          clonePlan(plan),
+		Plan:          primaryPlan,
+		AccountPlans:  accountPlans,
 		Metrics:       append([]ModelMetric(nil), metrics...),
 		LastRefreshAt: time.Now().UTC(),
 	})
@@ -444,8 +482,8 @@ func currentAutoMappings() []Mapping {
 	return append([]Mapping(nil), snapshot.Plan.Mappings...)
 }
 
-// AutoMappings returns the current generated mappings for an admin view or a
-// future scheduler hook. The returned slice is detached from the live state.
+// AutoMappings returns the primary account's current generated mappings for
+// the admin preview. The returned slice is detached from the live state.
 func AutoMappings() []Mapping {
 	mappings := currentAutoMappings()
 	config, err := LoadConfig()
@@ -456,7 +494,7 @@ func AutoMappings() []Mapping {
 	if len(mappings) > 0 {
 		return filterUnavailableTargetMappings(mappings, auto.UnavailableModels)
 	}
-	if !config.Auto.Enabled {
+	if !config.Auto.Enabled || len(automaticMappingTargetAccounts(auto)) == 0 {
 		return nil
 	}
 	if _, unavailable := unavailableModelSet(auto.UnavailableModels)[strings.ToLower(strings.TrimSpace(auto.BaselineModel))]; unavailable {
@@ -473,10 +511,22 @@ func AutoRoutingStatus() AutoRoutingSnapshot {
 	}
 	return AutoRoutingSnapshot{
 		Plan:          clonePlan(snapshot.Plan),
+		AccountPlans:  cloneAccountPlans(snapshot.AccountPlans),
 		Metrics:       append([]ModelMetric(nil), snapshot.Metrics...),
 		LastRefreshAt: snapshot.LastRefreshAt,
 		LastError:     snapshot.LastError,
 	}
+}
+
+func cloneAccountPlans(plans map[string]AutoMappingPlan) map[string]AutoMappingPlan {
+	if len(plans) == 0 {
+		return nil
+	}
+	clone := make(map[string]AutoMappingPlan, len(plans))
+	for accountID, plan := range plans {
+		clone[accountID] = clonePlan(plan)
+	}
+	return clone
 }
 
 func clonePlan(plan AutoMappingPlan) AutoMappingPlan {

@@ -288,46 +288,80 @@ func TestAutomaticMappingsUseHighestLunaAndCoverUnobservedGPTModels(t *testing.T
 	}
 }
 
-func TestAutomaticCoverageUsesConfiguredLunaBeforeFirstRadarRefresh(t *testing.T) {
+func TestAutomaticMappingsDoNotApplyUntilPersistedForTheAccount(t *testing.T) {
 	previous := autoSnapshot.Load()
-	autoSnapshot.Store(nil)
+	autoSnapshot.Store(&AutoRoutingSnapshot{Plan: AutoMappingPlan{Mappings: []Mapping{{
+		FromModel: "gpt-*",
+		ToModel:   "gpt-5.7-luna",
+		ToEffort:  "max",
+	}}}})
 	t.Cleanup(func() { autoSnapshot.Store(previous) })
 
 	mappings := accountMappings(Config{Auto: AutoRoutingConfig{
-		Enabled:       true,
-		BaselineModel: "gpt-5.7-luna",
+		Enabled:    true,
+		AccountIDs: []int64{42},
 	}}, 42)
-	require.Len(t, mappings, 1)
-
-	body := TransformBody([]byte(`{"model":"gpt-5.4","input":[]}`), mappings)
-	require.Equal(t, "gpt-5.7-luna", gjson.GetBytes(body, "model").String())
-	require.Equal(t, "max", gjson.GetBytes(body, "reasoning.effort").String())
+	require.Empty(t, mappings)
 }
 
-func TestAutomaticMappingCanBeScopedToSelectedAccounts(t *testing.T) {
+func TestRefreshAutoMappingsCalculatesAndStoresMappingsPerAccount(t *testing.T) {
+	t.Setenv("SUB2API_MODEL_REASONING_EFFORT_CONFIG", t.TempDir()+"/config.json")
 	previous := autoSnapshot.Load()
 	autoSnapshot.Store(nil)
 	t.Cleanup(func() { autoSnapshot.Store(previous) })
 
-	config := Config{
-		Auto: AutoRoutingConfig{
-			Enabled:    true,
-			AccountIDs: []int64{42},
-		},
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/iq-history":
+			_, _ = writer.Write([]byte(`{
+				"latest:gpt-5.6-luna@max":[{"ts":"2026-08-06T00:00:00Z","score":90}],
+				"latest:gpt-5.6-sol@xhigh":[{"ts":"2026-08-06T00:00:00Z","score":100}]
+			}`))
+		case "/api/v1/table":
+			_, _ = writer.Write([]byte(`{"cells":{
+				"task|gpt-5.6-luna|max":{"cost":0.5,"total_n":1},
+				"task|gpt-5.6-sol|xhigh":{"cost":2,"total_n":1}
+			}}`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	require.NoError(t, saveConfig(Config{
 		Accounts: map[string]AccountConfig{
-			"43": {Mappings: []Mapping{{FromModel: "gpt-5.4", FromEffort: "medium", ToModel: "gpt-5.5", ToEffort: "low"}}},
+			"99": {Mappings: []Mapping{{FromModel: "gpt-5.4", FromEffort: "medium", ToModel: "gpt-5.5", ToEffort: "low"}}},
 		},
-	}
+		Auto: AutoRoutingConfig{
+			Enabled:        true,
+			AccountIDs:     []int64{42, 43},
+			RadarBaseURL:   server.URL,
+			TimeoutSeconds: 5,
+		},
+	}, false))
 
-	require.Len(t, accountMappings(config, 42), 1)
-	selectedBody := TransformBody([]byte(`{"model":"gpt-5.4","input":[]}`), accountMappings(config, 42))
-	require.Equal(t, "gpt-5.6-luna", gjson.GetBytes(selectedBody, "model").String())
+	require.NoError(t, RefreshAutoMappings(context.Background()))
+	config, err := LoadConfig()
+	require.NoError(t, err)
+	account42 := config.Accounts["42"]
+	account43 := config.Accounts["43"]
+	require.NotEmpty(t, account42.Mappings)
+	require.Equal(t, account42.Mappings, account43.Mappings)
+	require.NotSame(t, &account42.Mappings[0], &account43.Mappings[0])
+	require.Equal(t, "gpt-5.4", config.Accounts["99"].Mappings[0].FromModel)
+	require.Equal(t, account42.Mappings, accountMappings(config, 42))
+	require.Equal(t, account43.Mappings, accountMappings(config, 43))
 
-	unselectedMappings := accountMappings(config, 43)
-	require.Len(t, unselectedMappings, 1)
-	unselectedBody := TransformBody([]byte(`{"model":"gpt-5.4","input":[]}`), unselectedMappings)
-	require.Equal(t, "gpt-5.5", gjson.GetBytes(unselectedBody, "model").String())
-	require.Equal(t, "low", gjson.GetBytes(unselectedBody, "reasoning.effort").String())
+	status := AutoRoutingStatus()
+	require.Len(t, status.AccountPlans, 2)
+	require.Equal(t, account42.Mappings, status.AccountPlans["42"].Mappings)
+	require.Equal(t, account43.Mappings, status.AccountPlans["43"].Mappings)
+}
+
+func TestRefreshAutoMappingsRequiresSelectedAccounts(t *testing.T) {
+	t.Setenv("SUB2API_MODEL_REASONING_EFFORT_CONFIG", t.TempDir()+"/config.json")
+	require.NoError(t, saveConfig(Config{Auto: AutoRoutingConfig{Enabled: true}}, false))
+	require.ErrorContains(t, RefreshAutoMappings(context.Background()), "at least one selected account")
 }
 
 func TestUnavailableModelsSkipAutoAndManualMappings(t *testing.T) {

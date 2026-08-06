@@ -245,6 +245,13 @@ func LoadConfig() (Config, error) {
 
 // SaveConfig validates and persists plugin configuration.
 func SaveConfig(value Config) error {
+	return saveConfig(value, true)
+}
+
+// saveConfig persists a complete configuration. Automatic refreshes update
+// account mappings themselves, so they must not restart the refresh runner
+// that is currently performing the write.
+func saveConfig(value Config, restartAutoRefresh bool) error {
 	value, err := NormalizeConfig(value)
 	if err != nil {
 		return err
@@ -283,7 +290,9 @@ func SaveConfig(value Config) error {
 	configState.path = path
 	configState.loaded = true
 	configState.Unlock()
-	startAutoRefresh()
+	if restartAutoRefresh {
+		startAutoRefresh()
+	}
 	return nil
 }
 
@@ -566,36 +575,15 @@ func firstNonEmpty(values ...string) string {
 }
 
 func accountMappings(config Config, accountID int64) []Mapping {
-	var mappings []Mapping
-	auto := normalizeAutoRoutingConfig(config.Auto)
-	if autoRoutingAppliesToAccount(auto, accountID) {
-		autoMappings := currentAutoMappings()
-		if len(autoMappings) == 0 {
-			autoMappings = automaticCoverageMappings(auto.BaselineModel, defaultBaselineEffort)
-		}
-		mappings = append(mappings, autoMappings...)
+	account, ok := config.Accounts[strconv.FormatInt(accountID, 10)]
+	if !ok {
+		return nil
 	}
-	if account, ok := config.Accounts[strconv.FormatInt(accountID, 10)]; ok {
-		// Manual mappings are appended so the resolver can prefer an exact
-		// manual rule over an auto-generated wildcard or tie.
-		mappings = append(mappings, account.Mappings...)
-	}
-	return filterUnavailableTargetMappings(mappings, auto.UnavailableModels)
+	return filterUnavailableTargetMappings(account.Mappings, config.Auto.UnavailableModels)
 }
 
-func autoRoutingAppliesToAccount(config AutoRoutingConfig, accountID int64) bool {
-	if !config.Enabled || accountID <= 0 {
-		return false
-	}
-	if len(config.AccountIDs) == 0 {
-		return true
-	}
-	for _, selectedID := range config.AccountIDs {
-		if selectedID == accountID {
-			return true
-		}
-	}
-	return false
+func automaticMappingTargetAccounts(config AutoRoutingConfig) []int64 {
+	return normalizeAutoAccountIDs(config.AccountIDs)
 }
 
 func normalizePausedTargetModels(models []string) []string {

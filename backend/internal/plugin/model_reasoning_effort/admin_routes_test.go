@@ -48,7 +48,7 @@ func TestUpdateConfigBatchRejectsInvalidAccountIDsBeforeLoadingConfig(t *testing
 	require.Equal(t, http.StatusBadRequest, response.Code)
 }
 
-func TestClearAllConfigsRemovesManualMappingsOnly(t *testing.T) {
+func TestClearAllConfigsRemovesMappingsAndDisablesAutomaticRefresh(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("SUB2API_MODEL_REASONING_EFFORT_CONFIG", t.TempDir()+"/config.json")
 	require.NoError(t, SaveConfig(Config{
@@ -73,6 +73,6 @@ func TestClearAllConfigsRemovesManualMappingsOnly(t *testing.T) {
 	config, err := LoadConfig()
 	require.NoError(t, err)
 	require.Empty(t, config.Accounts)
-	require.True(t, config.Auto.Enabled)
+	require.False(t, config.Auto.Enabled)
 	require.Equal(t, []string{"gpt-5.6-luna"}, config.Auto.UnavailableModels)
 }
