@@ -924,7 +924,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 					InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens,
 					CacheCreationTokens: result.Usage.CacheCreationInputTokens,
 					CacheReadTokens:     result.Usage.CacheReadInputTokens, ImageOutputTokens: result.Usage.ImageOutputTokens,
-				}, cost.TotalCost)
+				}, cost.TotalCost, pricingAt)
 			if usageLog.AccountStatsCost == nil {
 				usageLog.AccountStatsCost = previousStatsCost
 			}

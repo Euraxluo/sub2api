@@ -552,7 +552,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		if !strings.EqualFold(strings.TrimSpace(statsModel), strings.TrimSpace(result.UpstreamModel)) {
 			previousStatsCost := usageLog.AccountStatsCost
 			applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
-				account.ID, *apiKey.GroupID, statsModel, result.Model, tokens, cost.TotalCost)
+				account.ID, *apiKey.GroupID, statsModel, result.Model, tokens, cost.TotalCost, pricingAt)
 			if usageLog.AccountStatsCost == nil {
 				usageLog.AccountStatsCost = previousStatsCost
 			}
