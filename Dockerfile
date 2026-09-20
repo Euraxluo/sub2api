@@ -8,7 +8,7 @@
 # =============================================================================
 
 ARG NODE_IMAGE=node:24-alpine
-ARG GOLANG_IMAGE=golang:1.26.6-alpine
+ARG GOLANG_IMAGE=golang:1.27.0-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GLIBC_IMAGE=cgr.dev/chainguard/glibc-dynamic@sha256:57e5704e70a85b90191182eb6110d1c817df0d8e96035cb041195c5a351f0861
