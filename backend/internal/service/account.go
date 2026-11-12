@@ -1547,6 +1547,22 @@ func (a *Account) IsCodingPlan() bool {
 	return a.GetAccountMode() == AccountModeCoding
 }
 
+// UsesZcodeClientSign 报告账号是否启用智谱 BigModel 客户端签名（ZCode 的
+// zhipu-client-sign 通道，签约客户端享 1.5x 配额）。opt-in：credentials 里
+// zcode_sign=true 且 Coding Plan 模式。仅官方域（open.bigmodel.cn / api.z.ai）
+// 生效——签名握手与签名头只对官方端点有意义，自定义中转不支持该协议，
+// 盲发签名头只会污染第三方上游日志。
+func (a *Account) UsesZcodeClientSign() bool {
+	if a == nil || a.Platform != PlatformZhipu || a.GetAccountMode() != AccountModeCoding {
+		return false
+	}
+	if enabled, ok := a.Credentials["zcode_sign"].(bool); !ok || !enabled {
+		return false
+	}
+	baseURL := strings.ToLower(a.GetOpenAIBaseURL())
+	return strings.Contains(baseURL, "bigmodel.cn") || strings.Contains(baseURL, "z.ai")
+}
+
 // GetAPIProtocol 返回国产供应商账号的上游 API 协议。存储于
 // credentials["api_protocol"]；缺失或与平台不匹配时回退 chat_completions
 // （与既有行为完全一致）。responses 协议仅 deepseek / kimi / minimax 支持（官方原生

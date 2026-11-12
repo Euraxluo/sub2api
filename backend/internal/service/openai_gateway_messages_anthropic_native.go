@@ -108,6 +108,10 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		// 智谱客户端签名校验失败：重置签名密钥，让 failover/重试重新握手。
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.handleZcodeVerifyFailure(c, account, respBody)
+		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr
 		}
@@ -223,6 +227,19 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 	payloads := append([][]byte{body}, sessionBodies...)
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, payloads...)
+	// 智谱客户端签名（zcode 通道）：启用账号最后打上 7 个签名头；失败即中止
+	// （fail-closed）。放在账号级覆写之后，签名头拥有最高优先级。
+	if account.UsesZcodeClientSign() {
+		if signHeaders, err := s.zcodeSignedHeaders(ctx, account); err != nil {
+			return nil, nil, fmt.Errorf("zhipu client sign: %w", err)
+		} else {
+			for k, vs := range signHeaders {
+				for _, v := range vs {
+					req.Header.Set(k, v)
+				}
+			}
+		}
+	}
 
 	return req, body, nil
 }

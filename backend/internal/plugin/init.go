@@ -2,167 +2,244 @@
 //
 // Go does not expose a registry of already-compiled functions. The registry
 // used here is an explicit, typed dispatch boundary owned by the application.
-// Host call sites invoke stable plugin facades, while plugin implementations
-// can be replaced during startup without changing those call sites.
+// Host call sites invoke stable plugin facades below, while plugin
+// implementations can be replaced during startup without changing those call
+// sites.
+//
+// 当前状态：空注册表。历史功能插件（模型映射/IQ 路由/额度保护/计费策略/
+// 任务中心/Claw163 通知）已移除，facade 全部退化为 no-op：
+//   - 请求转发不做模型/强度改写（TransformRequest 直接返回）
+//   - 计费回退上游原生行为：EffectiveBillingModelSource 永远返回调用方
+//     传入值（不启用 max-cost），模型解析原样透传，倍率恒为 1
+//   - 用量/成本记录丢弃（无插件账本）
+//   - 管理路由不注册
+//
+// 后续如需新插件：在 internal/plugin/<name>/ 实现并在此注册，宿主调用点
+// 无需改动。
 package plugin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/plugin/admin_jobs"
-	billing_strategy "github.com/Wei-Shaw/sub2api/internal/plugin/billing_strategy"
-	"github.com/Wei-Shaw/sub2api/internal/plugin/claw163"
-	model_reasoning_effort "github.com/Wei-Shaw/sub2api/internal/plugin/model_reasoning_effort"
 	"github.com/gin-gonic/gin"
 )
 
+var errPluginRemoved = errors.New("plugin removed: notification channels are no longer available")
+
 // Install installs all built-in plugin implementations. It is intentionally
 // idempotent so startup and tests can call it more than once.
-func Install() {
-	claw163.Install()
-	model_reasoning_effort.Install()
-}
+func Install() {}
 
 // RegisterAdminRoutes registers all built-in plugin-owned admin endpoints.
-// Host routing code depends on this stable facade, not on a feature plugin.
-func RegisterAdminRoutes(adminGroup *gin.RouterGroup) {
-	admin_jobs.RegisterAdminRoutes(adminGroup)
-	claw163.RegisterAdminRoutes(adminGroup)
-	model_reasoning_effort.RegisterAdminRoutes(adminGroup)
-	billing_strategy.RegisterAdminRoutes(adminGroup)
+func RegisterAdminRoutes(_ *gin.RouterGroup) {}
+
+// AdminJobNotification is retained for host-side notifier wiring.
+type AdminJobNotification struct {
+	Title   string
+	Body    string
+	Subject string
 }
 
-type AdminJobNotification = admin_jobs.Notification
-type AdminJobNotifier = admin_jobs.Notifier
-
-// RegisterAdminJobNotifier connects the task-center plugin to the notification
-// provider selected by Admin Tools without importing host routes into plugins.
-func RegisterAdminJobNotifier(notifier AdminJobNotifier) {
-	admin_jobs.RegisterNotifier(notifier)
+// AdminJobNotifier connects the (removed) task-center plugin to a notification
+// provider. No implementation is registered; calls never happen.
+type AdminJobNotifier interface {
+	Send(ctx context.Context, notification AdminJobNotification) error
 }
 
-// SendClaw163Notification is the host-facing notification facade. Recipient,
-// profile, credential, and CLI details remain owned by the plugin.
-func SendClaw163Notification(ctx context.Context, subject, body string) error {
-	return claw163.Send(ctx, subject, body)
+// RegisterAdminJobNotifier is a no-op retention point for future plugins.
+func RegisterAdminJobNotifier(_ AdminJobNotifier) {}
+
+// SendClaw163Notification always fails: the notification channel was removed.
+func SendClaw163Notification(_ context.Context, _, _ string) error {
+	return errPluginRemoved
 }
 
-type BillingAuditCandidate = billing_strategy.Candidate
-type BillingAuditRecord = billing_strategy.AuditRecord
-type BillingStrategyDecision = billing_strategy.Decision
-type BillingStrategyInput = billing_strategy.DecisionInput
+// BillingModelSourceMaxCost is the historical max-cost source constant.
+const BillingModelSourceMaxCost = "max_cost"
 
-const BillingModelSourceMaxCost = billing_strategy.BillingModelSourceMaxCost
-
-// WithBillingStrategyAccountRateMultiplier passes the selected account's
-// in-process rate to the billing plugin as a fallback snapshot.
-func WithBillingStrategyAccountRateMultiplier(ctx context.Context, accountID int64, multiplier float64) context.Context {
-	return billing_strategy.WithAccountRateMultiplier(ctx, accountID, multiplier)
+// BillingStrategyInput is retained so max-cost call sites keep compiling.
+type BillingStrategyInput struct {
+	Context       context.Context
+	AccountID     int64
+	Effort        string
+	MappingChain  string
+	Models        []string
+	PricingSource func(string) string
+	Evaluate      func(string) (BillingAuditCandidate, error)
 }
 
-// ResolveMaxCostBillingDecision keeps model candidate expansion and selection
-// inside the billing-strategy plugin.
+// BillingAuditCandidate describes one pricing candidate (historical shape).
+type BillingAuditCandidate struct {
+	Model           string
+	Available       bool
+	Error           string
+	BillingMode     string
+	InputCost       float64
+	ImageInputCost  float64
+	OutputCost      float64
+	ImageOutputCost float64
+	CacheWriteCost  float64
+	CacheReadCost   float64
+	TotalCost       float64
+}
+
+// BillingStrategyDecision is the historical decision snapshot shape.
+type BillingStrategyDecision struct {
+	AccountID               int64
+	Strategy                string
+	MappingChain            string
+	Effort                  string
+	SelectedModel           string
+	SelectedCost            BillingAuditCandidate
+	VirtualModelCost        float64
+	AccountRateMultiplier   float64
+	AccountSnapshotResolved bool
+	AccountSnapshotError    error
+	Reason                  string
+	Candidates              []BillingAuditCandidate
+}
+
+// BillingAuditRecord is the historical audit entry shape.
+type BillingAuditRecord struct {
+	RequestID             string
+	AccountID             int64
+	RequestedModel        string
+	MappingChain          string
+	Strategy              string
+	SelectedModel         string
+	InputTokens           int
+	OutputTokens          int
+	CacheCreationTokens   int
+	CacheReadTokens       int
+	ImageInputTokens      int
+	ImageOutputTokens     int
+	ImageCount            int
+	GroupRateMultiplier   float64
+	AccountRateMultiplier float64
+	TotalCost             float64
+	ActualCost            float64
+	AccountStatsCost      *float64
+	AccountBilledCost     float64
+	Candidates            []BillingAuditCandidate
+}
+
+// WithBillingStrategyAccountRateMultiplier is a no-op pass-through.
+func WithBillingStrategyAccountRateMultiplier(ctx context.Context, _ int64, _ float64) context.Context {
+	return ctx
+}
+
+// ResolveMaxCostBillingDecision always reports "no candidate available" so the
+// host falls back to native billing.
 func ResolveMaxCostBillingDecision(input BillingStrategyInput) BillingStrategyDecision {
-	if input.Context != nil {
-		decision, err := billing_strategy.ResolveMaxCostDecisionWithAccountSnapshot(input.Context, input)
-		decision.AccountSnapshotError = err
-		return decision
-	}
-	return billing_strategy.ResolveMaxCostDecision(input)
+	return BillingStrategyDecision{Strategy: "disabled", Reason: "plugin registry is empty"}
 }
 
-// ResolveMaxCostBillingDecisionWithAccountSnapshot keeps account-rate lookup
-// inside the plugin. The host supplies only the request context and account ID;
-// the plugin calls the existing admin account endpoint and returns one immutable
-// decision snapshot for pricing and audit.
+// ResolveMaxCostBillingDecisionWithAccountSnapshot mirrors the disabled decision.
 func ResolveMaxCostBillingDecisionWithAccountSnapshot(ctx context.Context, input BillingStrategyInput) (BillingStrategyDecision, error) {
-	return billing_strategy.ResolveMaxCostDecisionWithAccountSnapshot(ctx, input)
+	return ResolveMaxCostBillingDecision(input), nil
 }
 
-func ResolveBillingModel(accountID int64, model, effort string) string {
-	return billing_strategy.ResolveBillingModel(accountID, model, effort)
-}
+// ResolveBillingModel passes the requested model through unchanged.
+func ResolveBillingModel(_ int64, model, _ string) string { return model }
 
-func ApplyAccountBillingModelSource(extra map[string]any, source *string) {
-	billing_strategy.ApplyAccountBillingModelSource(extra, source)
-}
+// ApplyAccountBillingModelSource no longer mutates the billing source.
+func ApplyAccountBillingModelSource(_ map[string]any, _ *string) {}
 
-func EffectiveBillingModelSource(extra map[string]any, channelSource string) string {
-	return billing_strategy.EffectiveBillingModelSource(extra, channelSource)
-}
+// EffectiveBillingModelSource returns the caller-provided source: max-cost is
+// never activated without a plugin.
+func EffectiveBillingModelSource(_ map[string]any, source string) string { return source }
 
+// BillingRate applies the historical mode-aware rate formula, which is pure
+// arithmetic and stays host-usable without any plugin.
 func BillingRate(billingMode string, tokenRate, imageRate, videoRate, searchRate float64, imageCount, videoCount, searchCalls int) float64 {
-	return billing_strategy.BillingRate(billingMode, tokenRate, imageRate, videoRate, searchRate, imageCount, videoCount, searchCalls)
+	rate := tokenRate
+	if needsImageRate(billingMode) && imageRate > 0 {
+		rate = imageRate
+	}
+	if billingMode == "video" && videoRate > 0 {
+		rate = videoRate
+	}
+	if billingMode == "search" && searchRate > 0 {
+		rate = searchRate
+	}
+	rate += float64(imageCount)*imageRate + float64(videoCount)*videoRate + float64(searchCalls)*searchRate
+	return rate
 }
 
+func needsImageRate(billingMode string) bool {
+	return billingMode == "image" || billingMode == "image_generation"
+}
+
+// CalculateUserChargeCost multiplies by the group rate (identity when 0).
 func CalculateUserChargeCost(rawCost, rateMultiplier float64) float64 {
-	return billing_strategy.CalculateUserChargeCost(rawCost, rateMultiplier)
+	if rateMultiplier <= 0 {
+		return rawCost
+	}
+	return rawCost * rateMultiplier
 }
 
+// CalculateAccountUserChargeCost multiplies by the account rate (identity when 0).
 func CalculateAccountUserChargeCost(rawCost, accountRateMultiplier float64) float64 {
-	return billing_strategy.CalculateAccountUserChargeCost(rawCost, accountRateMultiplier)
+	if accountRateMultiplier <= 0 {
+		return rawCost
+	}
+	return rawCost * accountRateMultiplier
 }
 
-func ApplyVirtualBillingCost(rawTotal, virtualTotal float64, totalCost, actualCost *float64, components ...*float64) {
-	billing_strategy.ApplyVirtualBillingCost(rawTotal, virtualTotal, totalCost, actualCost, components...)
+// ApplyVirtualBillingCost is retained as a no-op; virtual cost blending was
+// plugin-owned.
+func ApplyVirtualBillingCost(_, _ float64, _ *float64, _ ...*float64) {}
+
+// RecordBillingAudit drops the entry: no plugin ledger exists.
+func RecordBillingAudit(_ BillingAuditRecord) {}
+
+// SelectMostExpensiveBillingCandidate reports "not available".
+func SelectMostExpensiveBillingCandidate(_ []BillingAuditCandidate) (int, bool) {
+	return -1, false
 }
 
-// RecordBillingAudit writes the plugin-owned explanation of a max-cost billing
-// decision. It never changes the host billing result.
-func RecordBillingAudit(record BillingAuditRecord) {
-	billing_strategy.Record(record)
+// TransformRequest no longer rewrites requests.
+func TransformRequest(_ *http.Request, _ int64) {}
+
+// UsageMapping is the historical mapping result shape.
+type UsageMapping struct {
+	Matched    bool
+	Model      string
+	ModelFound bool
 }
 
-// SelectMostExpensiveBillingCandidate keeps the strategy decision in the
-// plugin boundary while price resolution remains in the host BillingService.
-func SelectMostExpensiveBillingCandidate(candidates []BillingAuditCandidate) (int, bool) {
-	return billing_strategy.SelectMostExpensive(candidates)
+// RecordUsageMappingFromResult drops plugin-owned mapping statistics.
+func RecordUsageMappingFromResult(_ int64, _ string, _ *string, _, _ int) {}
+
+// ResolveUsageWithEffort reports no mapping.
+func ResolveUsageWithEffort(_ int64, _, _ string) UsageMapping {
+	return UsageMapping{}
 }
 
-// TransformRequest dispatches the process-wide request transformation hook.
-func TransformRequest(req *http.Request, accountID int64) {
-	model_reasoning_effort.TransformRequest(req, accountID)
+// UpstreamUsageTotals is the historical ledger totals shape.
+type UpstreamUsageTotals struct {
+	CostUSD     float64
+	TotalTokens int64
 }
 
-// RecordUsageMappingFromResult dispatches plugin-owned mapping statistics.
-func RecordUsageMappingFromResult(accountID int64, model string, effort *string, inputTokens, outputTokens int) {
-	model_reasoning_effort.RecordUsageMappingFromResult(accountID, model, effort, inputTokens, outputTokens)
+// RecordUpstreamUsage drops provider-side ledger entries.
+func RecordUpstreamUsage(_ int64, _ float64, _ int64) {}
+
+// RecordUpstreamCost drops provider-side cost entries.
+func RecordUpstreamCost(_ int64, _ float64) {}
+
+// DailyUpstreamUsage reports zeros.
+func DailyUpstreamUsage(_ int64, _ string, _ time.Time) UpstreamUsageTotals {
+	return UpstreamUsageTotals{}
 }
 
-// ResolveUsageWithEffort returns the same source-model + source-effort mapping
-// used by the request transformer. Callers can use the effective model for
-// provider-side accounting without changing the user-facing billing model.
-func ResolveUsageWithEffort(accountID int64, model, effort string) model_reasoning_effort.UsageMapping {
-	return model_reasoning_effort.ResolveUsageWithEffort(accountID, model, effort)
-}
+// DailyUpstreamCost reports zero.
+func DailyUpstreamCost(_ int64, _ string, _ time.Time) float64 { return 0 }
 
-// RecordUpstreamUsage records provider-side standard cost and tokens in the
-// plugin-owned ledger. User billing remains in the host usage log.
-func RecordUpstreamUsage(accountID int64, costUSD float64, totalTokens int64) {
-	model_reasoning_effort.RecordUpstreamUsage(accountID, costUSD, totalTokens)
-}
-
-// RecordUpstreamCost records provider-side standard cost for plugin-owned
-// quota protection. It deliberately does not include user billing markup.
-func RecordUpstreamCost(accountID int64, costUSD float64) {
-	model_reasoning_effort.RecordUpstreamCost(accountID, costUSD)
-}
-
-// DailyUpstreamUsage returns provider-side cost and tokens for the current day.
-func DailyUpstreamUsage(accountID int64, timezoneName string, now time.Time) model_reasoning_effort.UpstreamUsageTotals {
-	return model_reasoning_effort.DailyUpstreamUsage(accountID, timezoneName, now)
-}
-
-// DailyUpstreamCost returns the provider-side spend for the current calendar
-// day in the requested timezone.
-func DailyUpstreamCost(accountID int64, timezoneName string, now time.Time) float64 {
-	return model_reasoning_effort.DailyUpstreamCost(accountID, timezoneName, now)
-}
-
-// WeeklyUpstreamUsage returns provider-side cost and tokens for the local
-// calendar week used by quota protection.
-func WeeklyUpstreamUsage(accountID int64, timezoneName string, now time.Time) model_reasoning_effort.UpstreamUsageTotals {
-	return model_reasoning_effort.WeeklyUpstreamUsage(accountID, timezoneName, now)
+// WeeklyUpstreamUsage reports zeros.
+func WeeklyUpstreamUsage(_ int64, _ string, _ time.Time) UpstreamUsageTotals {
+	return UpstreamUsageTotals{}
 }

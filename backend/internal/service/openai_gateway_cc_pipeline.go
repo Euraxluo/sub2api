@@ -247,6 +247,14 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 使配置值获得除共享传输层强制头之外的最高优先级。
 	account.ApplyHeaderOverrides(upstreamReq.Header)
 	applyOpenCodeSessionHeader(c, account, targetURL, upstreamReq.Header, body)
+	// 智谱客户端签名（zcode 通道）：启用账号最后打上 7 个签名头；失败即中止
+	// （fail-closed，见 openai_gateway_zcode_sign.go）。放在账号级覆写之后，
+	// 保证签名头不被覆盖（覆写是身份配置，签名是协议必需头）。
+	if account.UsesZcodeClientSign() {
+		if err := s.applyZcodeClientSign(ctx, upstreamReq, account); err != nil {
+			return nil, err
+		}
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

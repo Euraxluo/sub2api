@@ -225,6 +225,23 @@
           </div>
           <p class="input-hint mt-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
         </div>
+
+        <!-- 智谱客户端签名（ZCode 通道）：Coding Plan 签约客户端 1.5x 配额 -->
+        <div v-if="account.platform === 'zhipu' && editAccountMode === 'coding'" class="mt-4">
+          <label class="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+              data-testid="zhipu-zcode-sign-toggle-edit"
+              :checked="editZhipuZcodeSign"
+              @change="editZhipuZcodeSign = ($event.target as HTMLInputElement).checked"
+            />
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-200">
+              {{ t('admin.accounts.cnProviders.zcodeSign.title') }}
+            </span>
+          </label>
+          <p class="input-hint mt-1">{{ t('admin.accounts.cnProviders.zcodeSign.hint') }}</p>
+        </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
           <input
@@ -3702,6 +3719,8 @@ function currentOpenCodeOrCNMode(): string {
 // 智谱团队版 Coding Plan：组织/项目 ID，写入 credentials 供额度探测切换团队端点
 const editZhipuOrganization = ref('')
 const editZhipuProject = ref('')
+// 智谱客户端签名（ZCode 通道）开关
+const editZhipuZcodeSign = ref(false)
 const editAdaptiveBaseUrls = ref<Record<CnNativeApiProtocol, string>>({
   chat_completions: '',
   anthropic: '',
@@ -4922,6 +4941,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       if (newAccount.platform === 'zhipu') {
         editZhipuOrganization.value = typeof credentials.zhipu_organization === 'string' ? credentials.zhipu_organization : ''
         editZhipuProject.value = typeof credentials.zhipu_project === 'string' ? credentials.zhipu_project : ''
+        editZhipuZcodeSign.value = credentials.zcode_sign === true
       }
       if (providerRoutesByModel(newAccount.platform)) {
         editOpenCodeGoProtocolRules.value =
@@ -5722,6 +5742,12 @@ const handleSubmit = async () => {
             delete newCredentials.zhipu_organization
             delete newCredentials.zhipu_project
           }
+        }
+        // 智谱客户端签名（ZCode 通道）：显式写/删，避免残留旧值
+        if (editZhipuZcodeSign.value) {
+          newCredentials.zcode_sign = true
+        } else {
+          delete newCredentials.zcode_sign
         }
       }
 

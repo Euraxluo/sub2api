@@ -222,6 +222,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletionsWithStartTime(
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		// 智谱客户端签名校验失败：重置签名密钥，让 failover/重试重新握手。
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.handleZcodeVerifyFailure(c, account, respBody)
+		}
 		if account.Platform == PlatformGrok {
 			kind := "http_error"
 			if s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody) {

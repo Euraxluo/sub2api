@@ -520,6 +520,9 @@ func registerCNProviderRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		cn.GET("/accounts/:id/quota", h.Admin.CNProvider.QueryQuota)
 		// payg 账号余额（kimi/deepseek；zhipu 无余额端点）。
 		cn.GET("/accounts/:id/balance", h.Admin.CNProvider.QueryBalance)
+		// 智谱 GLM Coding Plan 重置卡：列表（实时+快照）与消耗。
+		cn.GET("/accounts/:id/zhipu-reset-cards", h.Admin.CNProvider.GetZhipuResetCards)
+		cn.POST("/accounts/:id/zhipu-reset-cards/use", h.Admin.CNProvider.UseZhipuResetCard)
 	}
 }
 

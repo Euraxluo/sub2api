@@ -720,6 +720,23 @@
         <p class="input-hint mt-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
       </div>
 
+      <!-- 智谱客户端签名（ZCode 通道）：Coding Plan 签约客户端 1.5x 配额 -->
+      <div v-if="form.platform === 'zhipu' && accountMode === 'coding'" class="mt-4">
+        <label class="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+            data-testid="zhipu-zcode-sign-toggle"
+            :checked="zhipuZcodeSign"
+            @change="zhipuZcodeSign = ($event.target as HTMLInputElement).checked"
+          />
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-200">
+            {{ t('admin.accounts.cnProviders.zcodeSign.title') }}
+          </span>
+        </label>
+        <p class="input-hint mt-1">{{ t('admin.accounts.cnProviders.zcodeSign.hint') }}</p>
+      </div>
+
       <!-- Account Type Selection (Gemini) -->
       <div v-if="form.platform === 'gemini'">
         <div class="flex items-center justify-between">
@@ -4407,6 +4424,7 @@ const step = ref(1)
 const submitting = ref(false)
 const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
+const zhipuZcodeSign = ref(false)
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
 const upstreamBillingAutoProbeEnabled = ref(true)
@@ -6173,6 +6191,10 @@ const handleSubmit = async () => {
     if (form.platform === 'zhipu' && accountMode.value === 'coding') {
       if (zhipuOrganization.value.trim()) credentials.zhipu_organization = zhipuOrganization.value.trim()
       if (zhipuProject.value.trim()) credentials.zhipu_project = zhipuProject.value.trim()
+    }
+    // 智谱客户端签名（ZCode 通道）：opt-in 开关写入凭据
+    if (form.platform === 'zhipu' && accountMode.value === 'coding' && zhipuZcodeSign.value) {
+      credentials.zcode_sign = true
     }
     if (providerRoutesByModel(form.platform)) {
       applyOpenCodeGoProtocolRules(credentials, openCodeGoProtocolRules.value, 'create')

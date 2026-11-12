@@ -58,6 +58,49 @@ export async function queryQuota(id: number): Promise<CNProviderQuotaProbeResult
   return data
 }
 
+/** 智谱重置卡视图，对齐后端 service.ZhipuResetCardView。 */
+export interface ZhipuResetCardView {
+  recordId: number
+  grantType: string
+  expireTime: string
+  expireAt: string
+  available: boolean
+  expired: boolean
+  expiringInH: number
+  window: '5h' | 'week'
+}
+
+/** 智谱重置卡面板数据，对齐后端 service.ZhipuResetCardsResult。 */
+export interface ZhipuResetCardsResult {
+  targetType: 'PERSONAL' | 'TEAM'
+  lastFiveHourResetTime?: string
+  lastWeekResetTime?: string
+  fiveHourCards: ZhipuResetCardView[]
+  weekCards: ZhipuResetCardView[]
+  fetchedAt: number
+}
+
+/** 查询智谱重置卡列表（实时拉取 + 落快照）。 */
+export async function queryZhipuResetCards(id: number): Promise<ZhipuResetCardsResult> {
+  const { data } = await apiClient.get<ZhipuResetCardsResult>(
+    `/admin/cn-providers/accounts/${id}/zhipu-reset-cards`
+  )
+  return data
+}
+
+/** 消耗一张智谱重置卡（recordId=0 自动选最早过期）。 */
+export async function useZhipuResetCard(
+  id: number,
+  window: '5h' | 'week',
+  recordId = 0
+): Promise<ZhipuResetCardsResult> {
+  const { data } = await apiClient.post<ZhipuResetCardsResult>(
+    `/admin/cn-providers/accounts/${id}/zhipu-reset-cards/use`,
+    { window, recordId }
+  )
+  return data
+}
+
 /** 查询 payg 账号余额。 */
 export async function queryBalance(id: number): Promise<CNProviderBalanceResult> {
   const { data } = await apiClient.get<CNProviderBalanceResult>(
@@ -68,5 +111,7 @@ export async function queryBalance(id: number): Promise<CNProviderBalanceResult>
 
 export default {
   queryQuota,
-  queryBalance
+  queryBalance,
+  queryZhipuResetCards,
+  useZhipuResetCard,
 }

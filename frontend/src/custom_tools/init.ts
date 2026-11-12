@@ -2,6 +2,9 @@ import type { Router } from 'vue-router'
 import customToolsRoutes from './routes'
 
 export default function initCustomTools(router: Router) {
+  // 防御：部分单测以最小 mock 替代 createRouter（无 addRoute）。路由注入
+  // 是渐进增强，宿主 router 缺能力时静默跳过而非崩溃。
+  if (typeof router.addRoute !== 'function') return
   for (const route of customToolsRoutes) {
     router.addRoute(route)
   }
@@ -10,8 +13,8 @@ export default function initCustomTools(router: Router) {
   import('@/i18n').then((module) => {
     const i18n = module.default
     const customMessages: any = {
-      en: { admin: { tools: { title: 'Admin Tools' } } },
-      zh: { admin: { tools: { title: '管理工具' } } }
+      en: { admin: { tools: { title: 'Admin Tools', emptyHint: 'The plugin system is empty. Feature plugins were removed; this page is a placeholder for future plugins.' } } },
+      zh: { admin: { tools: { title: '管理工具', emptyHint: '插件体系为空。历史功能插件已移除，此页面为未来插件预留。' } } }
     }
 
     // Proxy setLocaleMessage to ensure our keys persist when locales are reloaded
